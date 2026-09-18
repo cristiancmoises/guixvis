@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>guixvis — GNU Guix package explorer</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header id="topbar">
+    <div id="brand">
+      <span class="logo">guixvis</span>
+      <span id="commit" class="chip" aria-live="polite"></span>
+    </div>
+    <div id="search-wrap">
+      <input id="search" type="text" placeholder="Search 32,500 Guix packages…"
+             autocomplete="off" spellcheck="false" autocapitalize="off"
+             role="combobox" aria-expanded="false" aria-controls="results"
+             aria-label="Search packages">
+      <ul id="results" role="listbox" aria-label="Search results" hidden></ul>
+    </div>
+    <div id="controls">
+      <button id="dir-btn" title="Graph direction: dependencies or dependents"
+              aria-label="Toggle graph direction">deps ▾</button>
+      <div class="depth" aria-label="Graph depth">
+        <button id="depth-minus" aria-label="Decrease depth">−</button>
+        <span id="depth-val" aria-live="polite">2</span>
+        <button id="depth-plus" aria-label="Increase depth">+</button>
+      </div>
+      <button id="copy-link" title="Copy link to this view"
+              aria-label="Copy link to this view">⧉</button>
+    </div>
+  </header>
+
+  <main id="stage">
+    <div id="canvas-wrap">
+      <canvas id="graph" tabindex="0"
+              aria-label="Package dependency graph"></canvas>
+      <div id="graph-status" role="status" aria-live="polite"></div>
+      <button id="truncated-pill" hidden></button>
+      <div id="hint">click a bubble to explore · drag background to pan · scroll to zoom</div>
+    </div>
+    <aside id="sidebar" aria-label="Package details">
+      <button id="close-detail" aria-label="Close details">✕</button>
+      <div id="detail" tabindex="0"></div>
+    </aside>
+  </main>
+
+  <script src="/graph.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
