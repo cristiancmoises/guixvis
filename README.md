@@ -125,6 +125,23 @@ guix install guixvis
 The channel builds guixvis from source with a vendored Cargo registry
 (offline, `cargo --frozen`), including the web UI (`guixvis web`).
 
+### Emacs
+
+There is a small glue file in `elisp/` for people who live in Emacs. Point
+`load-path` at it and you get `M-x guixvis` (runs the TUI in a `term`
+buffer) and `M-x guixvis-web`. If you also use emacs-guix, one call drops
+both into its `guix` popup:
+
+```elisp
+(add-to-list 'load-path "/path/to/guixvis/elisp")
+(require 'guixvis)
+(guixvis-popup-install)
+```
+
+The file ships here rather than in emacs-guix so the menu entries only show
+up for people who actually have the program installed (see
+[guix/emacs-guix#40](https://codeberg.org/guix/emacs-guix/pulls/40)).
+
 ## Usage
 
 ```

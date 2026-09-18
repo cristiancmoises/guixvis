@@ -127,6 +127,23 @@ O canal compila o guixvis a partir do código-fonte com o registro Cargo
 vendado (offline, `cargo --frozen`), incluindo a interface web
 (`guixvis web`).
 
+### Emacs
+
+Tem um arquivo pequeno em `elisp/` para quem vive no Emacs. Aponte o
+`load-path` para ele e você ganha `M-x guixvis` (roda a TUI num buffer
+`term`) e `M-x guixvis-web`. Se você também usa o emacs-guix, uma chamada
+coloca os dois no popup `guix`:
+
+```elisp
+(add-to-list 'load-path "/caminho/para/guixvis/elisp")
+(require 'guixvis)
+(guixvis-popup-install)
+```
+
+O arquivo fica aqui, e não no emacs-guix, para que as entradas do menu só
+apareçam para quem realmente tem o programa instalado (veja
+[guix/emacs-guix#40](https://codeberg.org/guix/emacs-guix/pulls/40)).
+
 ## Uso
 
 ```

@@ -2,3 +2,4 @@
 PROMPT.md
 *.swp
 *.tmp
+*.elc
