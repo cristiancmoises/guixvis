@@ -51,6 +51,7 @@
     sidebar: $("#sidebar"),
     detail: $("#detail"),
     close: $("#close-detail"),
+    themeSelect: $("#theme-select"),
     tooltip: (() => {
       let t = $("#tooltip");
       if (!t) {
@@ -71,6 +72,25 @@
     onTransform: () => { /* deselect handled internally */ },
   });
   graph.dirReverse = false;
+
+  /* ---------- themes ---------- */
+  function applyTheme(name) {
+    document.documentElement.dataset.theme = name;
+    els.themeSelect.value = name;
+    try {
+      localStorage.setItem("guixvis-theme", name);
+    } catch (_) { /* storage unavailable */ }
+    graph.refreshColors();
+  }
+  els.themeSelect.addEventListener("change", () => applyTheme(els.themeSelect.value));
+  let savedTheme = "dark";
+  try {
+    savedTheme = localStorage.getItem("guixvis-theme") || "dark";
+  } catch (_) { /* storage unavailable */ }
+  if (![...els.themeSelect.options].some((o) => o.value === savedTheme)) {
+    savedTheme = "dark";
+  }
+  applyTheme(savedTheme);
 
   /* ---------- hash routing ---------- */
   function parseHash() {

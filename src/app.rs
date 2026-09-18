@@ -450,6 +450,8 @@ impl App {
                 self.dirty = true;
             }
             KeyCode::Char('T') => {
+                // On terminals uppercase T always carries SHIFT; keep a
+                // single forward cycle so the key never types into search.
                 self.theme_idx = (self.theme_idx + 1) % crate::theme::THEMES.len();
                 self.dirty = true;
             }

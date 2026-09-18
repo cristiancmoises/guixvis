@@ -70,6 +70,25 @@ back button; the layout is responsive down to phone sizes.
 
 ![guixvis web mobile — responsive layout](assets/guixvis-web-mobile.png)
 
+## Themes
+
+Both interfaces ship with eight selectable color themes: **dark** (default),
+**one**, **light**, **dracula**, **nord**, **gruvbox-dark**, **tokyo-night**
+and **catppuccin-mocha**.
+
+- TUI: press `T` to cycle (the active theme is shown in the status bar);
+  `NO_COLOR` is honored with a grayscale fallback.
+- Web UI: pick a theme in the topbar selector; the choice is remembered
+  between sessions.
+
+The TUI in the dracula theme:
+
+![guixvis TUI — dracula theme](assets/guixvis-tui-dracula.png)
+
+The web UI in the nord theme:
+
+![guixvis web — nord theme](assets/guixvis-web-nord.png)
+
 ## Requirements
 
 - GNU Guix (`guix` on `PATH`, or set `GUIX` to your Guix profile).
@@ -130,7 +149,7 @@ guixvis --help       all options
 | `+` / `−` | graph depth (1–8) |
 | `g` / `G` (empty search) | top / bottom (graph: refocus root) |
 | `o` (empty search) | open homepage in `$BROWSER`/`xdg-open` |
-| `T` | cycle theme (dark / one / light) |
+| `T` | cycle theme (8 palettes) |
 | `R` | rebuild the index in the background |
 | `?` | help |
 | `q` (empty search) / `Ctrl+C` | quit |

@@ -109,7 +109,10 @@ fn draw_body(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
 
 fn draw_status(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
     let left = status_left(app, th);
-    let right = Span::styled("? help · q quit · R rebuild", Style::default().fg(th.muted));
+    let right = Span::styled(
+        format!("{} · ? help · q quit · R rebuild", th.name),
+        Style::default().fg(th.muted),
+    );
     let mut spans = vec![left];
     let left_len: usize = spans.iter().map(|s| s.width()).sum();
     let right_len = right.width();

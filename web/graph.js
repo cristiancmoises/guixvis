@@ -325,7 +325,62 @@ class GraphCanvas {
     this.skeleton = false;
     this.loadedAt = 0;
     this.dirReverse = false;
+    this.colors = {
+      edge: "rgba(120, 134, 160, 0.20)",
+      edgeHot: "rgba(94, 196, 255, 0.45)",
+      node: [94, 196, 255],
+      rootAlt: [186, 120, 255],
+      selected: [255, 214, 90],
+      label: "rgba(220, 224, 232, 0.95)",
+      labelDim: "rgba(220, 224, 232, 0.55)",
+      halo: "rgba(94, 196, 255, 0.25)",
+      skeleton: "rgba(140, 150, 170, 0.35)",
+    };
+    this.refreshColors();
     this.bindInput();
+  }
+
+  /* Re-read the palette from the CSS variables (theme switching). */
+  refreshColors() {
+    const read = (name, fallback) => {
+      try {
+        const v = getComputedStyle(document.documentElement)
+          .getPropertyValue(name)
+          .trim();
+        if (v) return v;
+      } catch (_) { /* not in a browser */ }
+      return fallback;
+    };
+    const hexToRgb = (hex, fb) => {
+      const m = /^#([0-9a-f]{6})$/i.exec(hex || "");
+      if (!m) return fb;
+      return [
+        parseInt(m[1].slice(0, 2), 16),
+        parseInt(m[1].slice(2, 4), 16),
+        parseInt(m[1].slice(4, 6), 16),
+      ];
+    };
+    const rgba = (hex, alpha, fb) => {
+      const [r, g, b] = hexToRgb(hex, fb);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    };
+    const border = read("--border", "#2a3040");
+    const fg = read("--fg", "#dce0e8");
+    const muted = read("--muted", "#8d94a5");
+    const accent = read("--accent", "#5ec4ff");
+    const accent2 = read("--accent-2", "#ba78ff");
+    const warn = read("--warn", "#ffd65a");
+    this.colors = {
+      edge: rgba(border, 0.35, [120, 134, 160]),
+      edgeHot: rgba(accent, 0.5, [94, 196, 255]),
+      node: hexToRgb(accent, [94, 196, 255]),
+      rootAlt: hexToRgb(accent2, [186, 120, 255]),
+      selected: hexToRgb(warn, [255, 214, 90]),
+      label: rgba(fg, 0.95, [220, 224, 232]),
+      labelDim: rgba(fg, 0.55, [220, 224, 232]),
+      halo: rgba(accent, 0.25, [94, 196, 255]),
+      skeleton: rgba(muted, 0.35, [140, 150, 170]),
+    };
   }
 
   setGraph(engine, { root, selected, skeleton = false } = {}) {
@@ -392,7 +447,7 @@ class GraphCanvas {
   drawSkeleton() {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.w, this.h);
-    ctx.fillStyle = "rgba(140, 150, 170, 0.35)";
+    ctx.fillStyle = this.colors.skeleton;
     const t = performance.now() / 1000;
     for (let i = 0; i < 26; i++) {
       const a = (i / 26) * Math.PI * 2 + t * 0.4;
@@ -419,7 +474,7 @@ class GraphCanvas {
 
     // Edges (batched).
     ctx.lineWidth = 1 * unit;
-    ctx.strokeStyle = COLORS.edge;
+    ctx.strokeStyle = this.colors.edge;
     ctx.beginPath();
     for (const e of eng.edges) {
       const a = eng.pos.get(e.from);
@@ -430,7 +485,7 @@ class GraphCanvas {
     }
     ctx.stroke();
     ctx.beginPath();
-    ctx.strokeStyle = COLORS.edgeHot;
+    ctx.strokeStyle = this.colors.edgeHot;
     const hot = new Set([this.rootName, this.hovered, this.selected].filter(Boolean));
     for (const e of eng.edges) {
       if (hot.has(e.from) || hot.has(e.to)) {
@@ -451,9 +506,9 @@ class GraphCanvas {
       const isRoot = name === this.rootName;
       const isSel = name === this.selected;
       const isHov = name === this.hovered;
-      let rgb = COLORS.node;
-      if (isRoot) rgb = this.dirReverse ? COLORS.rootAlt : COLORS.node;
-      if (isSel) rgb = COLORS.selected;
+      let rgb = this.colors.node;
+      if (isRoot) rgb = this.dirReverse ? this.colors.rootAlt : this.colors.node;
+      if (isSel) rgb = this.colors.selected;
       const [cr, cg, cb] = rgb;
       const grad = ctx.createRadialGradient(
         p.x - r * 0.3, p.y - r * 0.35, r * 0.1, p.x, p.y, r
@@ -465,7 +520,7 @@ class GraphCanvas {
       grad.addColorStop(1, `rgba(${cr},${cg},${cb},0.9)`);
       if (isSel || isHov) {
         ctx.save();
-        ctx.shadowColor = COLORS.halo;
+        ctx.shadowColor = this.colors.halo;
         ctx.shadowBlur = 18 * unit;
       }
       ctx.fillStyle = grad;
@@ -482,7 +537,7 @@ class GraphCanvas {
       }
       if (isSel && !eng.reducedMotion) {
         const pulse = 1 + 0.08 * Math.sin(performance.now() / 380);
-        ctx.strokeStyle = COLORS.halo;
+        ctx.strokeStyle = this.colors.halo;
         ctx.lineWidth = 2 * unit;
         ctx.beginPath();
         ctx.arc(p.x, p.y, r * pulse + 5 * unit, 0, Math.PI * 2);
@@ -524,7 +579,7 @@ class GraphCanvas {
         const x = p.x - tw / 2;
         const y = p.y + r + 16 * unit;
         if (!overlaps(x, y, tw)) {
-          ctx.fillStyle = name === this.rootName ? COLORS.label : COLORS.labelDim;
+          ctx.fillStyle = name === this.rootName ? this.colors.label : this.colors.labelDim;
           ctx.fillText(label, x, y);
           placed.push({ x, y });
         }

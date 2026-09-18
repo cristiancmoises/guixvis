@@ -1,4 +1,6 @@
-//! Hand-rolled theming: three palettes plus a NO_COLOR grayscale fallback.
+//! Hand-rolled theming: eight palettes plus a NO_COLOR grayscale fallback.
+//! Cycle with `T` (forward) and `Shift+T` (backward); the active theme name
+//! is shown in the status bar.
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -21,7 +23,16 @@ pub struct Theme {
     pub graph_focus: Color,
 }
 
-pub const THEMES: [Theme; 3] = [DARK, ONE, LIGHT];
+pub const THEMES: [Theme; 8] = [
+    DARK,
+    ONE,
+    LIGHT,
+    DRACULA,
+    NORD,
+    GRUVBOX,
+    TOKYO_NIGHT,
+    CATPPUCCIN,
+];
 
 const DARK: Theme = Theme {
     name: "dark (default)",
@@ -93,6 +104,126 @@ const LIGHT: Theme = Theme {
     graph_node: Color::Rgb(0, 110, 200),
     graph_edge: Color::Rgb(180, 188, 202),
     graph_focus: Color::Rgb(150, 90, 0),
+};
+
+const DRACULA: Theme = Theme {
+    name: "dracula",
+    bg: Color::Rgb(40, 42, 54),
+    fg: Color::Rgb(248, 248, 242),
+    muted: Color::Rgb(98, 114, 164),
+    accent: Color::Rgb(139, 233, 253),
+    accent2: Color::Rgb(255, 121, 198),
+    badge_p: Color::Rgb(255, 184, 108),
+    badge_n: Color::Rgb(80, 250, 123),
+    matched: Style::new()
+        .fg(Color::Rgb(241, 250, 140))
+        .add_modifier(Modifier::BOLD),
+    selected: Style::new()
+        .bg(Color::Rgb(68, 71, 90))
+        .add_modifier(Modifier::BOLD),
+    border: Style::new().fg(Color::Rgb(68, 71, 90)),
+    tab_active: Style::new()
+        .fg(Color::Rgb(139, 233, 253))
+        .add_modifier(Modifier::BOLD),
+    graph_node: Color::Rgb(139, 233, 253),
+    graph_edge: Color::Rgb(68, 71, 90),
+    graph_focus: Color::Rgb(241, 250, 140),
+};
+
+const NORD: Theme = Theme {
+    name: "nord",
+    bg: Color::Rgb(46, 52, 64),
+    fg: Color::Rgb(216, 222, 233),
+    muted: Color::Rgb(129, 161, 193),
+    accent: Color::Rgb(136, 192, 208),
+    accent2: Color::Rgb(180, 142, 173),
+    badge_p: Color::Rgb(235, 203, 139),
+    badge_n: Color::Rgb(163, 190, 140),
+    matched: Style::new()
+        .fg(Color::Rgb(235, 203, 139))
+        .add_modifier(Modifier::BOLD),
+    selected: Style::new()
+        .bg(Color::Rgb(59, 66, 82))
+        .add_modifier(Modifier::BOLD),
+    border: Style::new().fg(Color::Rgb(76, 86, 106)),
+    tab_active: Style::new()
+        .fg(Color::Rgb(136, 192, 208))
+        .add_modifier(Modifier::BOLD),
+    graph_node: Color::Rgb(136, 192, 208),
+    graph_edge: Color::Rgb(76, 86, 106),
+    graph_focus: Color::Rgb(235, 203, 139),
+};
+
+const GRUVBOX: Theme = Theme {
+    name: "gruvbox-dark",
+    bg: Color::Rgb(40, 40, 40),
+    fg: Color::Rgb(235, 219, 178),
+    muted: Color::Rgb(146, 131, 116),
+    accent: Color::Rgb(131, 165, 152),
+    accent2: Color::Rgb(211, 134, 155),
+    badge_p: Color::Rgb(250, 189, 47),
+    badge_n: Color::Rgb(184, 187, 38),
+    matched: Style::new()
+        .fg(Color::Rgb(250, 189, 47))
+        .add_modifier(Modifier::BOLD),
+    selected: Style::new()
+        .bg(Color::Rgb(60, 56, 54))
+        .add_modifier(Modifier::BOLD),
+    border: Style::new().fg(Color::Rgb(80, 73, 69)),
+    tab_active: Style::new()
+        .fg(Color::Rgb(131, 165, 152))
+        .add_modifier(Modifier::BOLD),
+    graph_node: Color::Rgb(131, 165, 152),
+    graph_edge: Color::Rgb(80, 73, 69),
+    graph_focus: Color::Rgb(250, 189, 47),
+};
+
+const TOKYO_NIGHT: Theme = Theme {
+    name: "tokyo-night",
+    bg: Color::Rgb(26, 27, 38),
+    fg: Color::Rgb(192, 202, 245),
+    muted: Color::Rgb(86, 95, 137),
+    accent: Color::Rgb(122, 162, 247),
+    accent2: Color::Rgb(187, 154, 247),
+    badge_p: Color::Rgb(224, 175, 104),
+    badge_n: Color::Rgb(158, 206, 106),
+    matched: Style::new()
+        .fg(Color::Rgb(224, 175, 104))
+        .add_modifier(Modifier::BOLD),
+    selected: Style::new()
+        .bg(Color::Rgb(36, 40, 59))
+        .add_modifier(Modifier::BOLD),
+    border: Style::new().fg(Color::Rgb(41, 46, 66)),
+    tab_active: Style::new()
+        .fg(Color::Rgb(122, 162, 247))
+        .add_modifier(Modifier::BOLD),
+    graph_node: Color::Rgb(122, 162, 247),
+    graph_edge: Color::Rgb(41, 46, 66),
+    graph_focus: Color::Rgb(224, 175, 104),
+};
+
+const CATPPUCCIN: Theme = Theme {
+    name: "catppuccin-mocha",
+    bg: Color::Rgb(30, 30, 46),
+    fg: Color::Rgb(205, 214, 244),
+    muted: Color::Rgb(108, 112, 134),
+    accent: Color::Rgb(137, 180, 250),
+    accent2: Color::Rgb(203, 166, 247),
+    badge_p: Color::Rgb(249, 226, 175),
+    badge_n: Color::Rgb(166, 227, 161),
+    matched: Style::new()
+        .fg(Color::Rgb(249, 226, 175))
+        .add_modifier(Modifier::BOLD),
+    selected: Style::new()
+        .bg(Color::Rgb(49, 50, 68))
+        .add_modifier(Modifier::BOLD),
+    border: Style::new().fg(Color::Rgb(69, 71, 90)),
+    tab_active: Style::new()
+        .fg(Color::Rgb(137, 180, 250))
+        .add_modifier(Modifier::BOLD),
+    graph_node: Color::Rgb(137, 180, 250),
+    graph_edge: Color::Rgb(69, 71, 90),
+    graph_focus: Color::Rgb(249, 226, 175),
 };
 
 /// Grayscale fallback used when NO_COLOR is set.

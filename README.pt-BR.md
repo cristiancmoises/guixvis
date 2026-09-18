@@ -73,6 +73,25 @@ botão voltar do navegador; o layout é responsivo até em telas de celular.
 
 ![guixvis web mobile — layout responsivo](assets/guixvis-web-mobile.png)
 
+## Temas
+
+As duas interfaces trazem oito temas de cores: **dark** (padrão), **one**,
+**light**, **dracula**, **nord**, **gruvbox-dark**, **tokyo-night** e
+**catppuccin-mocha**.
+
+- TUI: pressione `T` para alternar (o tema ativo aparece na barra de
+  status); `NO_COLOR` é respeitado com um tema em tons de cinza.
+- Interface web: escolha o tema no seletor do topo; a escolha fica salva
+  entre as sessões.
+
+A TUI no tema dracula:
+
+![guixvis TUI — tema dracula](assets/guixvis-tui-dracula.png)
+
+A interface web no tema nord:
+
+![guixvis web — tema nord](assets/guixvis-web-nord.png)
+
 ## Requisitos
 
 - GNU Guix (`guix` no `PATH`, ou defina `GUIX` apontando para o seu perfil).
@@ -132,7 +151,7 @@ guixvis --help       todas as opções
 | `+` / `−` | profundidade do grafo (1–8) |
 | `g` / `G` (busca vazia) | topo / fim (no grafo: refocar a raiz) |
 | `o` (busca vazia) | abrir homepage no `$BROWSER`/`xdg-open` |
-| `T` | alternar tema (dark / one / light) |
+| `T` | alternar tema (8 paletas) |
 | `R` | reconstruir o índice em segundo plano |
 | `?` | ajuda |
 | `q` (busca vazia) / `Ctrl+C` | sair |
