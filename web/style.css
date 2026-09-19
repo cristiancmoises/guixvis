@@ -19,6 +19,7 @@
   --topbar-b: #10131b;
   --glow: #10141d;
   --sel: #223047;
+  --graph-glow: 0;
   --radius: 12px;
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
   --ease: cubic-bezier(0.2, 0, 0, 1);
@@ -65,6 +66,15 @@
   --fg: #c0caf5; --muted: #565f89; --accent: #7aa2f7; --accent-2: #bb9af7;
   --warn: #e0af68; --badge-p: #e0af68; --badge-n: #9ece6a; --sel: #24283b;
   --topbar-a: #24283b; --topbar-b: #1a1b26; --glow: #1f2230;
+}
+
+[data-theme="tron"] {
+  --bg: #000000; --panel: #04070a; --panel-2: #070d12; --border: #0d3b46;
+  --fg: #c8fff4; --muted: #3f8f95; --accent: #00e5ff; --accent-2: #ff2ec4;
+  --warn: #ffd400; --badge-p: #ffd400; --badge-n: #00ff9c; --sel: #00222a;
+  --topbar-a: #04070a; --topbar-b: #000000; --glow: #000000;
+  --shadow: 0 0 24px rgba(0, 229, 255, 0.18);
+  --graph-glow: 10;
 }
 
 [data-theme="catppuccin-mocha"] {

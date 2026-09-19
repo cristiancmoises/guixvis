@@ -75,6 +75,13 @@ um pacote — clique em uma para abrir a visão dela. Links diretos
 (`#/p/emacs?depth=2&dir=reverse`) são compartilháveis e funcionam com o
 botão voltar do navegador; o layout é responsivo até em telas de celular.
 
+Os nomes acima das bolhas são posicionados com caixas medidas e um halo na cor
+do fundo: rótulos que colidiriam simplesmente não são desenhados (o tooltip ao
+passar o mouse continua nomeando cada bolha), então o grafo fica legível em vez
+de virar uma pilha de textos sobrepostos.
+
+![guixvis web — tema tron, página preta e bolhas neon](assets/guixvis-web-tron.png)
+
 ▶ [Assista à demonstração da interface web](assets/guixvis-web-demo.mp4)
 
 ![guixvis web desktop — grafo de pacotes com bolhas clicáveis](assets/guixvis-web-desktop.png)
@@ -85,9 +92,10 @@ botão voltar do navegador; o layout é responsivo até em telas de celular.
 
 ## Temas
 
-As duas interfaces trazem oito temas de cores: **dark** (padrão), **one**,
-**light**, **dracula**, **nord**, **gruvbox-dark**, **tokyo-night** e
-**catppuccin-mocha**.
+As duas interfaces trazem nove temas de cores: **dark** (padrão), **one**,
+**light**, **dracula**, **nord**, **gruvbox-dark**, **tokyo-night**,
+**catppuccin-mocha** e **tron** — este último é preto puro com bolhas neon, que
+é o que você quer num painel OLED de madrugada.
 
 - TUI: pressione `T` para alternar (o tema ativo aparece na barra de
   status); `NO_COLOR` é respeitado com um tema em tons de cinza.
@@ -137,6 +145,33 @@ O canal compila o guixvis a partir do código-fonte com o registro Cargo
 vendado (offline, `cargo --frozen`), incluindo a interface web
 (`guixvis web`).
 
+### Artefatos de release (.zupt)
+
+Os fontes publicados em cada forja saem como `guixvis-<versão>.zupt`, um arquivo
+[zupt](https://git.securityops.com.br/cristiancmoises/zupt) gerado no nível
+máximo de compressão e **sem senha**, então qualquer pessoa consegue abrir. Para
+descompactar:
+
+```sh
+zupt extract guixvis-0.4.0.zupt    # cria ./guixvis-0.4.0/
+zupt list    guixvis-0.4.0.zupt    # mostra o conteúdo sem extrair
+zupt info    guixvis-0.4.0.zupt    # formato, codec, blocos, tamanho
+zupt test    guixvis-0.4.0.zupt    # confere os checksums
+```
+
+Depois é compilar normalmente:
+
+```sh
+cd guixvis-0.4.0
+cargo build --release --features web
+```
+
+O `zupt` vem do canal securityops (`guix install zupt`) ou dos repositórios
+dele. As releases até a 0.3.0 foram repacotadas de `.tar.gz` para `.zupt`, então
+todas as versões agora saem no mesmo formato; o canal Guix mantém um `.tar.gz`
+simples como fonte do pacote, porque o daemon de build precisa descompactar sem
+ferramentas extras.
+
 ### Emacs
 
 Tem um arquivo pequeno em `elisp/` para quem vive no Emacs. Aponte o
@@ -178,7 +213,7 @@ guixvis --help       todas as opções
 | `+` / `−` | profundidade do grafo (1–8) |
 | `g` / `G` (busca vazia) | topo / fim (no grafo: refocar a raiz) |
 | `o` (busca vazia) | abrir homepage no `$BROWSER`/`xdg-open` |
-| `T` | alternar tema (8 paletas) |
+| `T` | alternar tema (9 paletas) |
 | `R` | reconstruir o índice em segundo plano |
 | `?` | ajuda |
 | `q` (busca vazia) / `Ctrl+C` | sair |
@@ -222,11 +257,15 @@ corrompido é posto em quarentena (renomeado, nunca apagado em silêncio).
 ## Lendo o grafo
 
 O grafo era um campo de pontinhos iguais — um grafo de verdade, mas inútil como
-imagem. Agora ele mostra o que interessa:
+imagem — e depois virou uma imagem legível que ainda parecia um novelo. Agora
+também está calmo: pontos pequenos, arestas apagadas no fundo, e só os rótulos
+que merecem o espaço.
 
 ![guixvis TUI — grafo de dependências com cores por profundidade e legenda](assets/guixvis-tui-graph.png)
 
-- **Tamanho** é fan-in mais fan-out: os hubs saltam aos olhos.
+- **Bolhas pequenas.** Os nós são pontos; os hubs crescem só o suficiente para
+  serem achados, e duzentos deles deixam de virar borrão.
+- **Tamanho** é fan-in mais fan-out.
 - **Cor** segue a profundidade do BFS: raiz clara, dependências diretas normais,
   e quanto mais fundo, mais apagado.
 - **Matiz** indica o tipo de aresta que trouxe o pacote: propagated puxa para o
@@ -238,8 +277,13 @@ imagem. Agora ele mostra o que interessa:
 - O cabeçalho mostra nós, arestas, nós ocultos e o tempo do layout; o rodapé
   mostra o pacote selecionado com as contagens de dependências.
 
+- **Modos de aresta.** `e` alterna todas as arestas (apagadas) → só as arestas
+  da seleção → nenhuma aresta. `l` liga/desliga os rótulos dos hubs. O modo
+  ativo aparece escrito no rodapé, então ninguém precisa adivinhar.
+
 Teclas: `Enter` segue o nó selecionado, `+`/`−` mudam a profundidade, `g`
-refocaliza a raiz, `1`–`4` (ou `Tab`) trocam de aba, `T` alterna os temas.
+refocaliza a raiz, `e` alterna as arestas, `l` alterna os rótulos, `1`–`4` (ou
+`Tab`) trocam de aba, `T` alterna os temas.
 
 ## Desempenho
 
@@ -252,9 +296,13 @@ Partida, busca e layout são medidos, não estimados. `cargo run --release
 | Cache até índice utilizável | **30 ms** | snapshot binário, 32.500 pacotes (era ~126 ms com JSON gzipado) |
 | Busca fuzzy, 500 resultados | **~2 ms** | matcher nucleo sobre nome + sinopse |
 | Layout do grafo, 200 nós | **≤10 ms** | Fruchterman–Reingold determinístico, 300 iterações |
+| Payload da API de grafo | **33 KB → 4,8 KB** | gzip quando o navegador pede |
 
 O indexador já é rápido o bastante para que paralelizá-lo rendesse pouco; o
-tempo estava no formato do cache, então foi ali que ele foi gasto. O snapshot
+tempo estava no formato do cache, então foi ali que ele foi gasto. Uma
+aproximação do layout por grade uniforme foi implementada, medida 25% mais lenta
+que o laço exato de pares no limite de 200 nós, e removida — o comentário em
+`src/graph.rs` guarda os números para ninguém reintroduzir por intuição. O snapshot
 fica em `~/.cache/guixvis/index-v4.bin`, é escrito de forma atômica e é atrelado
 ao commit do seu Guix.
 
@@ -267,14 +315,17 @@ web é deliberadamente chata quanto a alcance:
 - recusa requisições cujo `Host` não seja `localhost`/`127.0.0.1`/`::1`
   (proteção contra DNS rebinding) e cujo `Origin` ou `Sec-Fetch-Site` indique
   outro site;
-- serve CSP estrita (`default-src 'self'`), `X-Content-Type-Options`,
+- serve CSP estrita (`default-src 'self'`, em todas as rotas, não só no
+  documento), `X-Content-Type-Options`,
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Resource-Policy` e `Cache-Control: no-store` na API;
 - valida os nomes de pacote vindos da URL, limita a busca a 200 caracteres, a
   profundidade a 1–8 e o grafo a 200 nós, com concorrência máxima de quatro;
 - grava o script Guile embutido num diretório privado `0700` como arquivo `0600`
   (o diretório temporário do sistema é gravável por todos) e recusa arquivos de
-  cache absurdamente grandes antes de lê-los.
+  cache absurdamente grandes antes de lê-los;
+- limita o corpo das requisições a 8 KB: uma API somente leitura não tem o que
+  fazer com um corpo.
 
 Não há autenticação porque não há o que autenticar: a API é somente leitura,
 apenas em loopback, e não altera nada.

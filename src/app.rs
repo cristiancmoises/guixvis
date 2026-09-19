@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::graph::{GraphView, DEFAULT_DEPTH};
+use crate::graph::{EdgeMode, GraphView, DEFAULT_DEPTH};
 use crate::index::Index;
 use crate::indexer::{self, IndexEvent};
 use crate::search::{HighlightedHit, SearchWorker, DEBOUNCE};
@@ -110,6 +110,10 @@ pub struct App {
     loader: Option<JoinHandle<()>>,
     /// Whether the last user action was a graph rebuild (drives dirty flag).
     pub graph_dirty: bool,
+    /// How much of the edge set the graph tab draws.
+    pub edge_mode: EdgeMode,
+    /// Whether hub labels are drawn in the graph tab.
+    pub graph_labels: bool,
 }
 
 impl App {
@@ -143,6 +147,8 @@ impl App {
             cancel,
             loader: Some(loader),
             graph_dirty: true,
+            edge_mode: EdgeMode::default(),
+            graph_labels: true,
         }
     }
 
@@ -447,6 +453,14 @@ impl App {
             }
             KeyCode::Char('?') => {
                 self.help_open = !self.help_open;
+                self.dirty = true;
+            }
+            KeyCode::Char('e') if self.tab == Tab::Graph && idle => {
+                self.edge_mode = self.edge_mode.next();
+                self.dirty = true;
+            }
+            KeyCode::Char('l') if self.tab == Tab::Graph && idle => {
+                self.graph_labels = !self.graph_labels;
                 self.dirty = true;
             }
             KeyCode::Char('T') => {

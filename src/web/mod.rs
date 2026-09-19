@@ -10,10 +10,10 @@ use std::net::SocketAddr;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, RwLock};
 
-use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, HOST, ORIGIN, REFERRER_POLICY,
-    X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
+    ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
+    CONTENT_TYPE, HOST, ORIGIN, REFERRER_POLICY, VARY, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
 };
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
@@ -252,6 +252,48 @@ async fn security_headers(req: Request<axum::body::Body>, next: Next) -> Respons
     res
 }
 
+/// Compress API responses when the client asks for it. Graph payloads for 200
+/// nodes are tens of kilobytes of very repetitive JSON; gzip cuts them to a
+/// fraction and flate2 is already a dependency of the cache.
+async fn compress_api(req: Request<axum::body::Body>, next: Next) -> Response {
+    use std::io::Write as _;
+
+    let gzip_ok = req
+        .headers()
+        .get(ACCEPT_ENCODING)
+        .and_then(|h| h.to_str().ok())
+        .map(|v| v.split(',').any(|p| p.trim().starts_with("gzip")))
+        .unwrap_or(false);
+    let api = req.uri().path().starts_with("/api/");
+    let res = next.run(req).await;
+    if !gzip_ok || !api {
+        return res;
+    }
+
+    let (mut parts, body) = res.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 8 * 1024 * 1024).await else {
+        return Response::from_parts(parts, axum::body::Body::empty());
+    };
+    if bytes.len() < 1024 {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    }
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
+    let compressed = match encoder.write_all(&bytes).and_then(|()| encoder.finish()) {
+        Ok(c) => c,
+        Err(_) => return Response::from_parts(parts, axum::body::Body::from(bytes)),
+    };
+    parts
+        .headers
+        .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    parts
+        .headers
+        .insert(VARY, HeaderValue::from_static("accept-encoding"));
+    if let Ok(len) = HeaderValue::from_str(&compressed.len().to_string()) {
+        parts.headers.insert(CONTENT_LENGTH, len);
+    }
+    Response::from_parts(parts, axum::body::Body::from(compressed))
+}
+
 /// Package names come from the URL; keep them to what Guix actually uses so
 /// nothing exotic reaches the index or the JSON encoder.
 fn valid_package_name(name: &str) -> bool {
@@ -290,7 +332,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/package/{name}", get(package))
         .route("/api/v1/graph/{name}", get(graph))
         .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn(compress_api))
         .layer(middleware::from_fn(local_only))
+        // Read-only API: nothing legitimate arrives with a body.
+        .layer(DefaultBodyLimit::max(8 * 1024))
         .with_state(state)
 }
 

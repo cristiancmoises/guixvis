@@ -15,6 +15,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, Tab};
+use crate::graph::EdgeMode;
 use crate::index::DepKind;
 use crate::theme::{self, Theme};
 
@@ -94,12 +95,17 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
 
     // Labels: the selection and the root always, then the biggest hubs that
     // fit on this terminal width.
-    let label_budget = if area.width >= 150 {
-        14
+    // Labels are the loudest thing on the screen, so they stay rationed:
+    // the selection and the root always, hubs only when there is room and the
+    // user asked for them (`l`).
+    let label_budget = if !app.graph_labels {
+        1
+    } else if area.width >= 150 {
+        10
     } else if area.width >= 110 {
-        7
+        5
     } else if area.width >= 84 {
-        3
+        2
     } else {
         0
     };
@@ -141,16 +147,20 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
         .x_bounds([-1.6, 1.6])
         .y_bounds([-1.0, 1.0])
         .paint(|ctx| {
+            // Edge modes keep the picture honest: "focus" shows only what the
+            // selection touches, "all" fades every edge into the background,
+            // "none" leaves the nodes alone.
+            let edge_mode = app.edge_mode;
             for (a, b) in &app.graph.edges {
                 let (x1, y1) = app.graph.pos[*a as usize];
                 let (x2, y2) = app.graph.pos[*b as usize];
                 let touching = *a as usize == selected || *b as usize == selected;
-                let color = if touching {
-                    theme::mix(th.graph_edge, th.accent, 0.75)
-                } else if focus {
-                    theme::mix(th.graph_edge, th.bg, 0.35)
-                } else {
-                    th.graph_edge
+                let color = match edge_mode {
+                    EdgeMode::None => continue,
+                    EdgeMode::Focus if !touching => continue,
+                    EdgeMode::Focus => theme::mix(th.graph_edge, th.accent, 0.8),
+                    EdgeMode::All if touching => theme::mix(th.graph_edge, th.accent, 0.8),
+                    EdgeMode::All => theme::mix(th.graph_edge, th.bg, 0.72),
                 };
                 ctx.draw(&GLine {
                     x1: x1 as f64,
@@ -164,7 +174,9 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
             for (i, id) in app.graph.nodes.iter().enumerate() {
                 let p = &index.packages[*id as usize];
                 let degree = index.dependents_count(*id) + p.dep_count();
-                let radius = (0.035 + 0.016 * (1.0 + degree as f64).ln()).clamp(0.035, 0.115);
+                // Deliberately small: 200 dots must not become a smear. Hubs
+                // grow just enough to be findable.
+                let radius = (0.014 + 0.006 * (1.0 + degree as f64).ln()).clamp(0.014, 0.042);
                 let (x, y) = app.graph.pos[i];
                 let color = node_color(app, th, i, selected, &neighbors, focus);
 
@@ -174,7 +186,7 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
                     ctx.draw(&Circle {
                         x: x as f64,
                         y: y as f64,
-                        radius: radius * 2.1,
+                        radius: radius * 2.8,
                         color: theme::mix(th.graph_focus, th.bg, 0.72),
                     });
                 }
@@ -226,14 +238,20 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
         Some(id) => index.packages.get(id as usize).map_or_else(String::new, |p| {
             let deg = index.dependents_count(id);
             format!(
-                " {} {} · {} deps · {} dependents — Enter follow · +/− depth · g refocus · Tab cycle ",
+                " {} {} · {} deps · {} dependents — Enter follow · e: {} · l: labels {} · +/− depth ",
                 p.name,
                 p.version,
                 p.dep_count(),
-                deg
+                deg,
+                app.edge_mode.label(),
+                if app.graph_labels { "on" } else { "off" }
             )
         }),
-        None => " Enter follow · +/− depth · g refocus".to_string(),
+        None => format!(
+            " Enter follow · e: {} · l: labels {} · +/− depth · g refocus",
+            app.edge_mode.label(),
+            if app.graph_labels { "on" } else { "off" }
+        ),
     };
     f.render_widget(
         Paragraph::new(Span::styled(hint, Style::default().fg(th.muted))),

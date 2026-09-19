@@ -72,6 +72,13 @@ every bubble is a package — click one to open its view. Deep links
 (`#/p/emacs?depth=2&dir=reverse`) are shareable and work with the browser
 back button; the layout is responsive down to phone sizes.
 
+Names above the bubbles are placed with measured boxes and a background halo:
+labels that would collide are simply not drawn (the hover tooltip still names
+every bubble), so the graph stays legible instead of turning into a pile of
+overlapping text.
+
+![guixvis web — tron theme, black page and neon bubbles](assets/guixvis-web-tron.png)
+
 ▶ [Watch the web UI demo](assets/guixvis-web-demo.mp4)
 
 ![guixvis web desktop — package graph with clickable bubbles](assets/guixvis-web-desktop.png)
@@ -82,9 +89,10 @@ back button; the layout is responsive down to phone sizes.
 
 ## Themes
 
-Both interfaces ship with eight selectable color themes: **dark** (default),
-**one**, **light**, **dracula**, **nord**, **gruvbox-dark**, **tokyo-night**
-and **catppuccin-mocha**.
+Both interfaces ship with nine selectable color themes: **dark** (default),
+**one**, **light**, **dracula**, **nord**, **gruvbox-dark**, **tokyo-night**,
+**catppuccin-mocha** and **tron** — the last one is pure black with neon
+bubbles, which is what you want on an OLED panel at night.
 
 - TUI: press `T` to cycle (the active theme is shown in the status bar);
   `NO_COLOR` is honored with a grayscale fallback.
@@ -135,6 +143,33 @@ guix install guixvis
 The channel builds guixvis from source with a vendored Cargo registry
 (offline, `cargo --frozen`), including the web UI (`guixvis web`).
 
+### Release artifacts (.zupt)
+
+Prebuilt sources are published on every forge as `guixvis-<version>.zupt`, a
+[zupt](https://git.securityops.com.br/cristiancmoises/zupt) archive written with
+the maximum compression level and **no password**, so anyone can open it. To
+unpack one:
+
+```sh
+zupt extract guixvis-0.4.0.zupt    # creates ./guixvis-0.4.0/
+zupt list    guixvis-0.4.0.zupt    # show the contents without extracting
+zupt info    guixvis-0.4.0.zupt    # format, codec, block count, size
+zupt test    guixvis-0.4.0.zupt    # verify the checksums
+```
+
+Then build it the normal way:
+
+```sh
+cd guixvis-0.4.0
+cargo build --release --features web
+```
+
+`zupt` comes from the securityops channel (`guix install zupt`) or from its own
+repositories. Releases up to 0.3.0 were re-packed from `.tar.gz` into `.zupt`,
+so every version now ships in the same format; the Guix channel keeps a plain
+`.tar.gz` for its package source, because the build daemon has to unpack it
+without extra tools.
+
 ### Emacs
 
 There is a small glue file in `elisp/` for people who live in Emacs. Point
@@ -176,7 +211,7 @@ guixvis --help       all options
 | `+` / `−` | graph depth (1–8) |
 | `g` / `G` (empty search) | top / bottom (graph: refocus root) |
 | `o` (empty search) | open homepage in `$BROWSER`/`xdg-open` |
-| `T` | cycle theme (8 palettes) |
+| `T` | cycle theme (9 palettes) |
 | `R` | rebuild the index in the background |
 | `?` | help |
 | `q` (empty search) / `Ctrl+C` | quit |
@@ -225,11 +260,15 @@ reverse edges are computed in Rust (not Guile) so they are unit-testable.
 ## Reading the graph
 
 The graph used to be a field of identical dots — technically a graph, useless as
-a picture. It now encodes what you actually want to know:
+a picture — and then it was a readable picture that still looked like tangled
+yarn. It is now calm as well: small dots, edges faded into the background, and
+only the labels that earn their space.
 
 ![guixvis TUI — dependency graph with depth colours and a legend](assets/guixvis-tui-graph.png)
 
-- **Size** is fan-in plus fan-out, so hubs stand out.
+- **Small bubbles.** Nodes are dots; hubs grow just enough to be findable, so
+  two hundred of them stop looking like a smear.
+- **Size** is fan-in plus fan-out.
 - **Colour** follows BFS depth: bright for the root, plain for direct
   dependencies, progressively dimmer for deeper ones.
 - **Hue** marks the kind of edge that pulled a package in: propagated inputs
@@ -241,8 +280,13 @@ a picture. It now encodes what you actually want to know:
 - The header reports nodes, edges, hidden nodes and how long the layout took;
   the footer shows the selected package with its dependency counts.
 
+- **Edge modes.** `e` cycles all edges (faded) → only the edges at the selection
+  → no edges at all. `l` toggles hub labels. Whatever mode is active is spelled
+  out in the footer, so nobody has to guess why the picture changed.
+
 Keys: `Enter` follows the selected node, `+`/`−` change depth, `g` refocuses the
-root, `1`–`4` (or `Tab`) switch tabs, `T` cycles themes.
+root, `e` cycles edge modes, `l` toggles labels, `1`–`4` (or `Tab`) switch tabs,
+`T` cycles themes.
 
 ## Performance
 
@@ -255,9 +299,13 @@ Startup, search and layout are measured, not guessed. `cargo run --release
 | Cache load → usable index | **30 ms** | binary snapshot, 32,500 packages (was ~126 ms with gzipped JSON) |
 | Fuzzy search, 500 hits | **~2 ms** | nucleo matcher over name + synopsis |
 | Graph layout, 200 nodes | **≤10 ms** | deterministic Fruchterman–Reingold, 300 iterations |
+| Graph API payload | **33 KB → 4.8 KB** | gzipped when the browser asks for it |
 
 The indexer is fast enough that parallelising it would buy little; the cache
-format is where the time was, so that is where it was spent. The snapshot lives
+format is where the time was, so that is where it was spent. A uniform-grid
+approximation of the layout was implemented, measured 25% slower than the exact
+pairwise loop at the 200-node cap, and removed again — the comment in
+`src/graph.rs` records the numbers so nobody re-adds it on a hunch. The snapshot lives
 at `~/.cache/guixvis/index-v4.bin`, is written atomically, and is keyed on your
 Guix commit.
 
@@ -270,14 +318,17 @@ deliberately boring about reachability:
 - rejects requests whose `Host` is not `localhost`/`127.0.0.1`/`::1`
   (DNS-rebinding guard) and whose `Origin` or `Sec-Fetch-Site` marks them as
   cross-site;
-- serves a strict CSP (`default-src 'self'`), `X-Content-Type-Options`,
+- serves a strict CSP (`default-src 'self'` — on every route, not just the
+  document), `X-Content-Type-Options`,
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Resource-Policy` and `Cache-Control: no-store` on the API;
 - validates package names from the URL, caps search queries at 200 characters,
   depth at 1–8 and graph nodes at 200 with a bounded concurrency of four;
 - writes the embedded Guile script into a private `0700` directory as a `0600`
   file (the system temp directory is world-writable), and refuses absurdly large
-  cache files before reading them.
+  cache files before reading them;
+- caps request bodies at 8 KB: a read-only GET API has no business receiving
+  one.
 
 There is no authentication because there is nothing to authenticate: the API is
 read-only, loopback-only and has no state to change.

@@ -32,6 +32,8 @@ pub fn draw(f: &mut Frame, _app: &App, th: &Theme, area: Rect) {
         ("d / r / v", "dependencies / reverse / graph"),
         ("h / l", "collapse / expand tree node"),
         ("+ / −", "graph depth"),
+        ("e", "graph edges (all / focus / none)"),
+        ("l", "graph labels on / off"),
         ("o", "open homepage in browser"),
         ("T", "cycle theme (8 palettes)"),
         ("R", "rebuild index"),

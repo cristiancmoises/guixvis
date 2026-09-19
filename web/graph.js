@@ -370,6 +370,7 @@ class GraphCanvas {
     const accent = read("--accent", "#5ec4ff");
     const accent2 = read("--accent-2", "#ba78ff");
     const warn = read("--warn", "#ffd65a");
+    const glow = parseFloat(read("--graph-glow", "0")) || 0;
     this.colors = {
       edge: rgba(border, 0.35, [120, 134, 160]),
       edgeHot: rgba(accent, 0.5, [94, 196, 255]),
@@ -381,6 +382,8 @@ class GraphCanvas {
       halo: rgba(accent, 0.25, [94, 196, 255]),
       skeleton: rgba(muted, 0.35, [140, 150, 170]),
     };
+    this.glow = glow;
+    this.bgHex = read("--bg", "#0a0c10");
   }
 
   setGraph(engine, { root, selected, skeleton = false } = {}) {
@@ -518,16 +521,19 @@ class GraphCanvas {
         `rgba(${Math.min(255, cr + 60)},${Math.min(255, cg + 60)},${Math.min(255, cb + 60)},0.95)`
       );
       grad.addColorStop(1, `rgba(${cr},${cg},${cb},0.9)`);
-      if (isSel || isHov) {
+      const neon = this.glow > 0;
+      if (neon || isSel || isHov) {
         ctx.save();
-        ctx.shadowColor = this.colors.halo;
-        ctx.shadowBlur = 18 * unit;
+        ctx.shadowColor = neon
+          ? `rgba(${cr},${cg},${cb},0.95)`
+          : this.colors.halo;
+        ctx.shadowBlur = (neon ? this.glow : 18) * unit;
       }
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
       ctx.fill();
-      if (isSel || isHov) ctx.restore();
+      if (neon || isSel || isHov) ctx.restore();
       if (isRoot) {
         ctx.strokeStyle = "rgba(220,224,232,0.85)";
         ctx.lineWidth = 1.5 * unit;
@@ -545,45 +551,68 @@ class GraphCanvas {
       }
     }
 
-    // Labels: greedy, max 14, root/selected/hover always, only when zoomed.
+    // Labels are placed in screen space: measured in pixels, checked against
+    // the boxes already placed, and drawn with a background-coloured halo so
+    // they stay readable where edges pass underneath. Guesswork in world
+    // units is what made them collide before.
+    const dpr = window.devicePixelRatio || 1;
     const zoom = this.scale;
-    const labelCandidates = [];
-    const addLabel = (name, priority) => {
-      if (name && eng.node(name)) labelCandidates.push({ name, priority });
+    const candidates = [];
+    const add = (name, priority) => {
+      if (name && eng.node(name)) candidates.push({ name, priority });
     };
-    addLabel(this.rootName, 3);
-    if (this.selected && this.selected !== this.rootName) addLabel(this.selected, 3);
-    if (this.hovered && this.hovered !== this.rootName && this.hovered !== this.selected) {
-      addLabel(this.hovered, 3);
-    }
-    if (zoom >= 0.7 * this.fitScale()) {
+    add(this.selected, 3);
+    add(this.rootName, 3);
+    add(this.hovered, 3);
+    const wideEnough = zoom >= 0.6 * this.fitScale();
+    if (wideEnough) {
       const byDegree = [...eng.names]
-        .filter((nm) => !labelCandidates.some((l) => l.name === nm))
+        .filter((nm) => !candidates.some((c) => c.name === nm))
         .sort((a, b) => (eng.node(b).degree || 0) - (eng.node(a).degree || 0));
-      for (const nm of byDegree.slice(0, 11)) addLabel(nm, 1);
+      for (const nm of byDegree.slice(0, 12)) add(nm, 1);
     }
 
-    const placed = [];
-    const overlaps = (x, y, w2) =>
-      placed.some((p) => Math.abs(p.x - x) < w2 + 0.1 && Math.abs(p.y - y) < 0.05);
-    labelCandidates
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.textBaseline = "top";
+    const boxes = [];
+    const collides = (b) =>
+      boxes.some(
+        (o) =>
+          b.x < o.x + o.w + 3 &&
+          b.x + b.w + 3 > o.x &&
+          b.y < o.y + o.h + 2 &&
+          b.y + b.h + 2 > o.y
+      );
+    candidates
       .sort((a, b) => b.priority - a.priority)
-      .slice(0, 14)
       .forEach(({ name }) => {
         const node = eng.node(name);
         const p = eng.pos.get(name);
         const r = eng.radiusOfWorld(name);
-        const label = name.length > 22 ? name.slice(0, 21) + "…" : name;
-        ctx.font = `${name === this.rootName ? "700" : "500"} ${13 * unit}px ui-sans-serif, system-ui, sans-serif`;
+        const label = name.length > 24 ? name.slice(0, 23) + "…" : name;
+        const big = (node.degree || 0) >= 8 || name === this.rootName;
+        const size = name === this.rootName ? 13 : big ? 12.5 : 11.5;
+        ctx.font = `${name === this.rootName ? "700" : "500"} ${size}px ui-sans-serif, system-ui, sans-serif`;
         const tw = ctx.measureText(label).width;
-        const x = p.x - tw / 2;
-        const y = p.y + r + 16 * unit;
-        if (!overlaps(x, y, tw)) {
-          ctx.fillStyle = name === this.rootName ? this.colors.label : this.colors.labelDim;
-          ctx.fillText(label, x, y);
-          placed.push({ x, y });
-        }
+        const sx = p.x * zoom + this.tx;
+        const sy = p.y * zoom + this.ty;
+        const rPx = r * zoom;
+        const box = { x: sx - tw / 2, y: sy + rPx + 7, w: tw, h: size + 4 };
+        if (box.x < 2 || box.x + box.w > this.w - 2) return;
+        if (box.y + box.h > this.h - 2) return;
+        if (collides(box)) return;
+        boxes.push(box);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = this.bgHex;
+        ctx.strokeText(label, box.x, box.y);
+        ctx.fillStyle =
+          name === this.rootName || name === this.selected
+            ? this.colors.label
+            : this.colors.labelDim;
+        ctx.fillText(label, box.x, box.y);
       });
+    ctx.restore();
 
     ctx.restore();
   }

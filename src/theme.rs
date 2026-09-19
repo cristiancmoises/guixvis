@@ -23,7 +23,7 @@ pub struct Theme {
     pub graph_focus: Color,
 }
 
-pub const THEMES: [Theme; 8] = [
+pub const THEMES: [Theme; 9] = [
     DARK,
     ONE,
     LIGHT,
@@ -32,6 +32,7 @@ pub const THEMES: [Theme; 8] = [
     GRUVBOX,
     TOKYO_NIGHT,
     CATPPUCCIN,
+    TRON,
 ];
 
 const DARK: Theme = Theme {
@@ -224,6 +225,30 @@ const CATPPUCCIN: Theme = Theme {
     graph_node: Color::Rgb(137, 180, 250),
     graph_edge: Color::Rgb(69, 71, 90),
     graph_focus: Color::Rgb(249, 226, 175),
+};
+
+const TRON: Theme = Theme {
+    name: "tron",
+    bg: Color::Rgb(0, 0, 0),
+    fg: Color::Rgb(200, 255, 244),
+    muted: Color::Rgb(63, 143, 149),
+    accent: Color::Rgb(0, 229, 255),
+    accent2: Color::Rgb(255, 46, 196),
+    badge_p: Color::Rgb(255, 212, 0),
+    badge_n: Color::Rgb(0, 255, 156),
+    matched: Style::new()
+        .fg(Color::Rgb(255, 212, 0))
+        .add_modifier(Modifier::BOLD),
+    selected: Style::new()
+        .bg(Color::Rgb(0, 34, 42))
+        .add_modifier(Modifier::BOLD),
+    border: Style::new().fg(Color::Rgb(10, 58, 68)),
+    tab_active: Style::new()
+        .fg(Color::Rgb(0, 229, 255))
+        .add_modifier(Modifier::BOLD),
+    graph_node: Color::Rgb(0, 229, 255),
+    graph_edge: Color::Rgb(11, 46, 54),
+    graph_focus: Color::Rgb(255, 46, 196),
 };
 
 /// Grayscale fallback used when NO_COLOR is set.
