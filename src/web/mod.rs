@@ -231,6 +231,8 @@ async fn security_headers(req: Request<axum::body::Body>, next: Next) -> Respons
     let api = req.uri().path().starts_with("/api/");
     let mut res = next.run(req).await;
     let headers = res.headers_mut();
+    // Every route carries the policy, not just the HTML document.
+    headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
     headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     headers.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));

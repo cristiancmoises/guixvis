@@ -323,3 +323,18 @@ async fn exotic_package_names_are_rejected() {
         assert_eq!(res.status(), StatusCode::OK, "{name} was refused");
     }
 }
+
+#[tokio::test]
+async fn static_assets_carry_the_policy_too() {
+    // The CSP used to be added only by the HTML handler; it belongs on every
+    // response, because scripts and styles are exactly what it constrains.
+    for path in ["/", "/app.js", "/graph.js", "/style.css"] {
+        let res = router(state()).oneshot(get(path)).await.expect("call");
+        assert_eq!(res.status(), StatusCode::OK, "{path}");
+        let csp = res
+            .headers()
+            .get("content-security-policy")
+            .unwrap_or_else(|| panic!("{path} has no CSP"));
+        assert!(csp.to_str().unwrap().contains("default-src 'self'"), "{path}");
+    }
+}
