@@ -57,23 +57,15 @@ pub fn start_loader(tx: Sender<IndexEvent>, cancel: Cancel, force: bool) -> Join
 
             if !force {
                 if let Ok(cache) = Cache::new() {
-                    match cache.load(commit.as_deref()) {
-                        Ok(CacheStatus::Fresh(doc)) => match Index::from_doc(doc, now_ms()) {
-                            Ok(index) => {
-                                let _ = tx.send(IndexEvent::Ready {
-                                    index: Arc::new(index),
-                                    fresh: true,
-                                    unkeyed: commit.is_none(),
-                                });
-                                return;
-                            }
-                            Err(e) => {
-                                let _ = tx.send(IndexEvent::Failed {
-                                    msg: format!("cached index rejected ({e}); rebuilding"),
-                                });
-                                cache.quarantine();
-                            }
-                        },
+                    match cache.load(commit.as_deref(), now_ms()) {
+                        Ok(CacheStatus::Fresh(index)) => {
+                            let _ = tx.send(IndexEvent::Ready {
+                                index: Arc::new(index),
+                                fresh: true,
+                                unkeyed: commit.is_none(),
+                            });
+                            return;
+                        }
                         Ok(CacheStatus::Stale { reason }) => {
                             let _ = tx.send(IndexEvent::Failed {
                                 msg: format!("cache stale ({reason}); rebuilding"),
@@ -94,16 +86,18 @@ pub fn start_loader(tx: Sender<IndexEvent>, cancel: Cancel, force: bool) -> Join
 
             // Rebuild path: run the indexer, then save the cache.
             match build(commit.as_deref(), &cancel, &tx) {
-                Ok((doc, raw, _)) => {
-                    if let Ok(cache) = Cache::new() {
-                        if let Err(e) = cache.save(&raw) {
-                            let _ = tx.send(IndexEvent::Failed {
-                                msg: format!("cache save failed: {e}"),
-                            });
-                        }
-                    }
+                Ok((doc, _raw, _)) => {
                     match Index::from_doc(doc, now_ms()) {
                         Ok(index) => {
+                            // The snapshot is what the next start reads; the
+                            // JSON from the indexer stays in memory.
+                            if let Ok(cache) = Cache::new() {
+                                if let Err(e) = cache.save(&index) {
+                                    let _ = tx.send(IndexEvent::Failed {
+                                        msg: format!("cache save failed: {e}"),
+                                    });
+                                }
+                            }
                             let _ = tx.send(IndexEvent::Ready {
                                 index: Arc::new(index),
                                 fresh: false,
@@ -127,12 +121,57 @@ pub fn start_loader(tx: Sender<IndexEvent>, cancel: Cancel, force: bool) -> Join
         .expect("failed to spawn loader thread")
 }
 
-/// A temp file removed on drop.
+/// A private temp directory removed on drop.
 struct TempScript(PathBuf);
 
 impl Drop for TempScript {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Write the embedded script into a fresh directory that only this user can
+/// read: the system temp directory is world-writable, so a predictable file
+/// name there is an invitation to a symlink race.
+fn write_private_script(content: &str) -> std::io::Result<(PathBuf, TempScript)> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "guixvis-{}-{}-{}",
+        std::process::id(),
+        nanos,
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(&dir)?;
+        let path = dir.join("index.scm");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        Ok((path, TempScript(dir)))
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir(&dir)?;
+        let path = dir.join("index.scm");
+        std::fs::write(&path, content)?;
+        Ok((path, TempScript(dir)))
     }
 }
 
@@ -147,12 +186,8 @@ pub fn build(
     let started = Instant::now();
     let guix = find_guix().ok_or_else(|| IndexerError::NotFound(guix_search_paths()))?;
 
-    // Write the embedded script next to the system temp dir.
-    let script_path =
-        std::env::temp_dir().join(format!("guixvis-index-{}.scm", std::process::id()));
-    std::fs::write(&script_path, INDEX_SCRIPT)
+    let (script_path, _script_guard) = write_private_script(INDEX_SCRIPT)
         .map_err(|e| IndexerError::Exited(format!("cannot write temp script: {e}")))?;
-    let _script_guard = TempScript(script_path.clone());
 
     let commit = commit.unwrap_or("");
     let generated_ms = std::time::SystemTime::now()

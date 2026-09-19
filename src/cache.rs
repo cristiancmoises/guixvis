@@ -1,26 +1,25 @@
-//! Gzipped JSON index cache under `$XDG_CACHE_HOME/guixvis/`.
+//! Binary index snapshot under `$XDG_CACHE_HOME/guixvis/`.
 //!
-//! Writes are transactional (temp file + atomic rename); corrupt files are
-//! quarantined instead of silently deleted.
+//! The snapshot holds the resolved index (see [`crate::blob`]), which loads in
+//! a fraction of the time the indexer's JSON needs. Writes are transactional
+//! (temp file + atomic rename); corrupt files are quarantined instead of
+//! silently deleted.
 
 use std::fs::{self, File};
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
-use flate2::Compression;
-
+use crate::blob;
 use crate::error::CacheError;
-use crate::model::IndexDoc;
+use crate::index::Index;
 
-/// Whether a cached document is usable and current.
+/// Whether a cached index is usable and current.
 #[derive(Debug)]
 pub enum CacheStatus {
-    /// Cache parsed successfully and matches the live channel commit.
-    Fresh(IndexDoc),
-    /// Cache is valid JSON but was produced against a different Guix commit.
+    /// Snapshot decoded and matches the live channel commit.
+    Fresh(Index),
+    /// Snapshot is readable but was produced against a different Guix commit.
     Stale { reason: String },
     /// No cache file present.
     Absent,
@@ -47,49 +46,61 @@ impl Cache {
     }
 
     pub fn path(&self) -> PathBuf {
-        self.dir.join("index-v3.json.gz")
+        self.dir.join("index-v4.bin")
     }
 
-    /// Load and deserialize the cache. `live_commit` is the commit of the
-    /// currently active Guix channel (`None` when it cannot be determined —
-    /// the cache is then accepted with an "unverified" badge by the caller).
-    pub fn load(&self, live_commit: Option<&str>) -> Result<CacheStatus, CacheError> {
+    /// Load the cached snapshot. `live_commit` is the commit of the currently
+    /// active Guix channel (`None` when it cannot be determined — the cache is
+    /// then accepted with an "unverified" badge by the caller).
+    pub fn load(
+        &self,
+        live_commit: Option<&str>,
+        built_ms: u64,
+    ) -> Result<CacheStatus, CacheError> {
         let path = self.path();
         if !path.exists() {
             return Ok(CacheStatus::Absent);
         }
-        let file = File::open(&path).map_err(|e| CacheError::Read(e.to_string()))?;
-        let decoder = GzDecoder::new(BufReader::new(file));
-        let doc: IndexDoc =
-            serde_json::from_reader(decoder).map_err(|e| CacheError::Parse(e.to_string()))?;
+        // A snapshot is ~14 MB for 32.5k packages; anything far beyond that
+        // is not ours and must not be read into memory.
+        let len = fs::metadata(&path)
+            .map_err(|e| CacheError::Read(e.to_string()))?
+            .len();
+        if len > 512 * 1024 * 1024 {
+            return Err(CacheError::Read(format!(
+                "snapshot is implausibly large ({len} bytes)"
+            )));
+        }
+        let bytes = fs::read(&path).map_err(|e| CacheError::Read(e.to_string()))?;
+        let index = blob::decode(&bytes, built_ms).map_err(|e| CacheError::Parse(e.to_string()))?;
 
         if let Some(live) = live_commit.filter(|c| !c.is_empty()) {
-            if doc.header.guix_commit != live {
+            if index.guix_commit != live {
                 return Ok(CacheStatus::Stale {
-                    reason: format!(
-                        "cache commit {} != live commit {}",
-                        doc.header.guix_commit, live
-                    ),
+                    reason: format!("cache commit {} != live commit {}", index.guix_commit, live),
                 });
             }
         }
-        Ok(CacheStatus::Fresh(doc))
+        Ok(CacheStatus::Fresh(index))
     }
 
-    /// Atomically persist raw index JSON bytes (gzip-compressed).
-    pub fn save(&self, json_bytes: &[u8]) -> Result<(), CacheError> {
+    /// Atomically persist a snapshot of `index`.
+    pub fn save(&self, index: &Index) -> Result<(), CacheError> {
+        let bytes = blob::encode(index);
         let tmp = self
             .dir
-            .join(format!("index-v3.json.gz.tmp-{}", std::process::id()));
+            .join(format!("index-v4.bin.tmp-{}", std::process::id()));
         let result = (|| -> Result<(), CacheError> {
-            let file = File::create(&tmp).map_err(|e| CacheError::Write(e.to_string()))?;
-            let mut enc = GzEncoder::new(file, Compression::new(6));
-            enc.write_all(json_bytes)
+            let mut file = File::create(&tmp).map_err(|e| CacheError::Write(e.to_string()))?;
+            file.write_all(&bytes)
                 .map_err(|e| CacheError::Write(e.to_string()))?;
-            let file = enc.finish().map_err(|e| CacheError::Write(e.to_string()))?;
             file.sync_all()
                 .map_err(|e| CacheError::Write(e.to_string()))?;
-            fs::rename(&tmp, self.path()).map_err(|e| CacheError::Write(e.to_string()))
+            let renamed =
+                fs::rename(&tmp, self.path()).map_err(|e| CacheError::Write(e.to_string()));
+            // The gzipped-JSON cache of 0.2.x has no reader any more.
+            let _ = fs::remove_file(self.dir.join("index-v3.json.gz"));
+            renamed
         })();
         if result.is_err() {
             let _ = fs::remove_file(&tmp);
@@ -107,7 +118,7 @@ impl Cache {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let dest = self.dir.join(format!("index-v3.json.gz.corrupt-{ts}"));
+        let dest = self.dir.join(format!("index-v4.bin.corrupt-{ts}"));
         let _ = fs::rename(&path, &dest);
     }
 }

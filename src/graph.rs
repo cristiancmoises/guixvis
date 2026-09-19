@@ -148,6 +148,13 @@ pub struct GraphView {
     /// Nodes discovered beyond the budget (honest truncation count).
     pub truncated: usize,
     pub laid_out: bool,
+    /// BFS depth of each node (0 for the root); drives the color ramp.
+    pub depth_of: Vec<u8>,
+    /// Edge kind each node was reached through (None for the root); drives
+    /// the edge coloring.
+    pub kind_of: Vec<Option<DepKind>>,
+    /// How long the last layout took, for the status line.
+    pub layout_ms: f64,
 }
 
 impl Default for GraphView {
@@ -167,17 +174,28 @@ impl GraphView {
             selected: 0,
             truncated: 0,
             laid_out: false,
+            depth_of: Vec::new(),
+            kind_of: Vec::new(),
+            layout_ms: 0.0,
         }
     }
 
     /// Rebuild the graph for `root` at `depth`, then layout.
     pub fn rebuild(&mut self, index: &Index, root: u32, depth: u8) {
+        self.rebuild_dir(index, root, depth, Dir::Deps);
+    }
+
+    /// Rebuild for an explicit direction (forward dependencies or reverse
+    /// dependents), then layout.
+    pub fn rebuild_dir(&mut self, index: &Index, root: u32, depth: u8, dir: Dir) {
         self.root = root;
         self.depth = depth;
-        let projection = project(index, root, Dir::Deps, depth, NODE_BUDGET);
+        let projection = project(index, root, dir, depth, NODE_BUDGET);
         self.nodes = projection.nodes;
         self.edges = projection.edges;
         self.truncated = projection.truncated;
+        self.depth_of = projection.depth_of;
+        self.kind_of = projection.kind_of;
         self.selected = 0;
         self.layout();
     }

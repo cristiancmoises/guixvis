@@ -7,6 +7,8 @@ use std::sync::Arc;
 use crate::error::IndexError;
 use crate::model::{IndexDoc, SCHEMA_VERSION};
 
+pub use crate::model::SCHEMA_VERSION as INDEX_SCHEMA_VERSION;
+
 /// How many synopsis characters go into the fuzzy-search haystack.
 pub const SYN_LIMIT: usize = 200;
 
@@ -86,6 +88,7 @@ pub struct BfsNode {
 }
 
 /// The full index. Immutable after construction; shared behind `Arc`.
+#[derive(Debug)]
 pub struct Index {
     pub packages: Vec<Package>,
     /// First id for a package name (names may repeat across versions).
@@ -115,47 +118,31 @@ impl Index {
             return Err(IndexError::Count(header.package_count, len));
         }
 
-        // Pass 1: validate ids and names, intern names, resolve name -> id.
-        let mut seen = vec![false; len];
-        let mut names: HashMap<Arc<str>, u32> = HashMap::with_capacity(len);
+        // Pass 1: name -> id, so dependency *names* from the indexer become
+        // ids here. Everything derived (reverse edges, module grouping) is
+        // built once in `from_packages`.
+        let mut names: HashMap<&str, u32> = HashMap::with_capacity(len);
         for pj in &doc.packages {
-            let id = pj.id as usize;
-            if id >= len {
-                return Err(IndexError::IdOutOfRange(pj.id, len));
-            }
-            if seen[id] {
-                return Err(IndexError::DuplicateId(pj.id));
-            }
-            seen[id] = true;
             if pj.name.is_empty() {
                 return Err(IndexError::EmptyName(pj.id));
             }
-            let name: Arc<str> = Arc::from(pj.name.as_str());
-            names.entry(name).or_insert(pj.id);
+            names.entry(pj.name.as_str()).or_insert(pj.id);
         }
 
-        // Pass 2: build packages in id order; invert dependency edges and
-        // group packages by defining module in the same pass.
-        let mut dependents: Vec<Vec<u32>> = vec![Vec::new(); len];
-        let mut by_module: HashMap<Arc<str>, Vec<u32>> = HashMap::new();
+        // Pass 2: build packages in id order, resolving each dependency name.
         let intern = |s: &str| -> Arc<str> { Arc::from(s) };
 
         let mut packages: Vec<Package> = Vec::with_capacity(len);
-        for pj in doc.packages {
+        for pj in &doc.packages {
             let file: Arc<str> = intern(&pj.file.0);
-            if !file.is_empty() {
-                by_module.entry(Arc::clone(&file)).or_default().push(pj.id);
-            }
 
             // Deduplicate across input kinds; first occurrence wins.
             let mut edges: Vec<(u32, DepKind)> = Vec::new();
             let mut add = |list: &[String], kind: DepKind| {
                 for n in list {
-                    if let Some(dep) = names.get(n.as_str()) {
-                        let dep = *dep;
+                    if let Some(&dep) = names.get(n.as_str()) {
                         if !edges.iter().any(|(d, _)| *d == dep) {
                             edges.push((dep, kind));
-                            dependents[dep as usize].push(pj.id);
                         }
                     }
                     // Unknown names (objects that are not packages) are
@@ -195,22 +182,72 @@ impl Index {
             });
         }
 
-        // Freeze dependent lists (sorted for deterministic display order).
+        let generated_ms: u64 = header.generated_ms.parse().unwrap_or(0);
+        Index::from_packages(packages, header.guix_commit.clone(), generated_ms, built_ms)
+    }
+
+    /// Assemble an index from packages whose dependency lists already hold
+    /// ids: validate them, derive the name lookup, the reverse edges and the
+    /// module grouping.
+    ///
+    /// Both cache paths land here, so the derived structures are built by one
+    /// piece of code with one set of checks.
+    pub fn from_packages(
+        packages: Vec<Package>,
+        guix_commit: String,
+        generated_ms: u64,
+        built_ms: u64,
+    ) -> Result<Self, IndexError> {
+        let len = packages.len();
+        let mut seen = vec![false; len];
+        let mut names: HashMap<Arc<str>, u32> = HashMap::with_capacity(len);
+        let mut dependents: Vec<Vec<u32>> = vec![Vec::new(); len];
+        let mut by_module: HashMap<Arc<str>, Vec<u32>> = HashMap::new();
+
+        for p in &packages {
+            let id = p.id as usize;
+            if id >= len {
+                return Err(IndexError::IdOutOfRange(p.id, len));
+            }
+            if seen[id] {
+                return Err(IndexError::DuplicateId(p.id));
+            }
+            seen[id] = true;
+            if p.name.is_empty() {
+                return Err(IndexError::EmptyName(p.id));
+            }
+            names.entry(Arc::clone(&p.name)).or_insert(p.id);
+            if !p.file.is_empty() {
+                by_module.entry(Arc::clone(&p.file)).or_default().push(p.id);
+            }
+            for dep in p
+                .inputs
+                .iter()
+                .chain(p.propagated.iter())
+                .chain(p.native.iter())
+            {
+                if *dep as usize >= len {
+                    return Err(IndexError::IdOutOfRange(*dep, len));
+                }
+                dependents[*dep as usize].push(p.id);
+            }
+        }
+
         let dependents: Vec<Arc<[u32]>> = dependents
             .into_iter()
             .map(|mut v| {
                 v.sort_unstable();
+                v.dedup();
                 Arc::from(v.as_slice())
             })
             .collect();
 
-        let generated_ms: u64 = header.generated_ms.parse().unwrap_or(0);
         Ok(Index {
             packages,
             names,
             dependents,
             by_module,
-            guix_commit: header.guix_commit.clone(),
+            guix_commit,
             generated_ms,
             built_ms,
         })

@@ -19,6 +19,16 @@ pacvis do Arch: pesquise **qualquer** pacote, veja tudo que está
 └───────────────────────────────────────────────────────────────┘
 ```
 
+## Uma nota do autor
+
+Fiz isso para o meu próprio uso. Rodo Guix nas minhas máquinas, vivia esquecendo
+como os pacotes se ligam, e queria algo mais rápido do que passar a tarde
+grepeando `guix show` — por isso o guixvis é todo de teclado, escuro por padrão,
+e o grafo foi feito para ser lido no terminal.
+
+É a ferramenta que eu uso todo dia. Sinta-se à vontade para usar também, e para
+mudar o que não te agradar.
+
 ## Recursos
 
 - **Pesquise qualquer coisa** — busca fuzzy em todos os pacotes
@@ -192,17 +202,82 @@ Ao iniciar, o guixvis carrega o cache ou executa `guix repl` com um script
 Guile embutido (`data/guix-index.scm`) que percorre todos os pacotes com
 `fold-packages`, extrai nome/versão/sinopse/descrição/licenças/localização e
 as arestas de dependência, e emite um único documento JSON na saída padrão
-(progresso na saída de erro). O lado Rust valida o documento, calcula as
-arestas reversas e mantém o índice em memória; o JSON bruto é armazenado
-em cache gzip em:
+(progresso na saída de erro). O lado Rust valida o documento, resolve as
+dependências, calcula as arestas reversas e mantém o índice em memória. Um
+snapshot binário desse índice resolvido é gravado em:
 
 ```
-~/.cache/guixvis/index-v3.json.gz
+~/.cache/guixvis/index-v4.bin
 ```
+
+O snapshot existe porque reparsear o JSON do indexador a cada partida custava
+mais do que todo o resto do programa somado; os números estão na seção de
+desempenho. Ele é escrito num arquivo temporário e renomeado no lugar, então
+uma queda no meio da escrita não deixa cache pela metade.
 
 O cache é vinculado ao commit do seu canal Guix (via `guix describe`);
 quando o Guix é atualizado, o cache é reconstruído sozinho. Um cache
 corrompido é posto em quarentena (renomeado, nunca apagado em silêncio).
+
+## Lendo o grafo
+
+O grafo era um campo de pontinhos iguais — um grafo de verdade, mas inútil como
+imagem. Agora ele mostra o que interessa:
+
+![guixvis TUI — grafo de dependências com cores por profundidade e legenda](assets/guixvis-tui-graph.png)
+
+- **Tamanho** é fan-in mais fan-out: os hubs saltam aos olhos.
+- **Cor** segue a profundidade do BFS: raiz clara, dependências diretas normais,
+  e quanto mais fundo, mais apagado.
+- **Matiz** indica o tipo de aresta que trouxe o pacote: propagated puxa para o
+  roxo, native para o âmbar, inputs comuns ficam azuis.
+- **Seleção** ganha um halo, os vizinhos clareiam e o resto escurece — ajuda em
+  aglomerado denso.
+- **Rótulos** aparecem para a seleção, a raiz e os maiores hubs que couberem na
+  largura do terminal.
+- O cabeçalho mostra nós, arestas, nós ocultos e o tempo do layout; o rodapé
+  mostra o pacote selecionado com as contagens de dependências.
+
+Teclas: `Enter` segue o nó selecionado, `+`/`−` mudam a profundidade, `g`
+refocaliza a raiz, `1`–`4` (ou `Tab`) trocam de aba, `T` alterna os temas.
+
+## Desempenho
+
+Partida, busca e layout são medidos, não estimados. `cargo run --release
+--example bench` imprime os mesmos números na sua máquina:
+
+| Etapa | Tempo | Observação |
+|---|---|---|
+| Construção do índice (`guix repl` + Guile) | **3,7 s** | só quando o cache falta ou o canal mudou |
+| Cache até índice utilizável | **30 ms** | snapshot binário, 32.500 pacotes (era ~126 ms com JSON gzipado) |
+| Busca fuzzy, 500 resultados | **~2 ms** | matcher nucleo sobre nome + sinopse |
+| Layout do grafo, 200 nós | **≤10 ms** | Fruchterman–Reingold determinístico, 300 iterações |
+
+O indexador já é rápido o bastante para que paralelizá-lo rendesse pouco; o
+tempo estava no formato do cache, então foi ali que ele foi gasto. O snapshot
+fica em `~/.cache/guixvis/index-v4.bin`, é escrito de forma atômica e é atrelado
+ao commit do seu Guix.
+
+## Segurança
+
+O guixvis roda na sua máquina e lê a sua instalação do Guix, então a interface
+web é deliberadamente chata quanto a alcance:
+
+- escuta apenas em `127.0.0.1` e recusa conexões cujo par não é loopback;
+- recusa requisições cujo `Host` não seja `localhost`/`127.0.0.1`/`::1`
+  (proteção contra DNS rebinding) e cujo `Origin` ou `Sec-Fetch-Site` indique
+  outro site;
+- serve CSP estrita (`default-src 'self'`), `X-Content-Type-Options`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+  `Cross-Origin-Resource-Policy` e `Cache-Control: no-store` na API;
+- valida os nomes de pacote vindos da URL, limita a busca a 200 caracteres, a
+  profundidade a 1–8 e o grafo a 200 nós, com concorrência máxima de quatro;
+- grava o script Guile embutido num diretório privado `0700` como arquivo `0600`
+  (o diretório temporário do sistema é gravável por todos) e recusa arquivos de
+  cache absurdamente grandes antes de lê-los.
+
+Não há autenticação porque não há o que autenticar: a API é somente leitura,
+apenas em loopback, e não altera nada.
 
 ## Desenvolvimento
 

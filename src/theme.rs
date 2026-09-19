@@ -257,6 +257,19 @@ pub fn theme(idx: usize) -> &'static Theme {
     &THEMES[idx % THEMES.len()]
 }
 
+/// Blend two colors: `t == 0.0` keeps `a`, `t == 1.0` yields `b`.
+///
+/// Colors that are not RGB (the terminal's 16 basic colors, for instance)
+/// are returned unchanged; there is nothing meaningful to interpolate.
+pub fn mix(a: Color, b: Color, t: f32) -> Color {
+    let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) else {
+        return if t < 0.5 { a } else { b };
+    };
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color::Rgb(lerp(ar, br), lerp(ag, bg), lerp(ab, bb))
+}
+
 pub fn theme_names() -> Vec<&'static str> {
     if std::env::var_os("NO_COLOR").is_some() {
         vec![GRAY.name]

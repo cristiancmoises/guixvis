@@ -6,6 +6,7 @@
 //! reverse-dependency trees, and a force-directed dependency graph.
 
 pub mod app;
+pub mod blob;
 pub mod cache;
 pub mod error;
 pub mod graph;

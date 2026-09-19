@@ -18,6 +18,16 @@ polished, keyboard-first interface.
 └───────────────────────────────────────────────────────────────┘
 ```
 
+## A note from the author
+
+I built this for my own use. I run Guix on my machines, I kept forgetting how
+packages hang together, and I wanted something quicker than grepping `guix show`
+all afternoon — so guixvis is keyboard-first, dark by default, and its graph is
+meant to be read in a terminal.
+
+It is the tool I reach for every day. Feel free to use it too, and to change
+whatever does not suit you.
+
 ## Features
 
 - **Search anything** — fuzzy search across all packages (name + synopsis),
@@ -190,13 +200,18 @@ On startup guixvis either loads its cache or spawns `guix repl` with an
 embedded Guile script (`data/guix-index.scm`) that walks all packages via
 `fold-packages`, extracts name/version/synopsis/description/licenses/location
 and the dependency edges, and streams one JSON document to stdout (progress
-lines on stderr). The Rust side validates the document, computes reverse
-dependency edges, and stores the index in memory; the raw JSON is cached
-gzipped under:
+lines on stderr). The Rust side validates the document, resolves the
+dependencies, computes reverse dependency edges, and stores the index in
+memory. A binary snapshot of that resolved index is then written under:
 
 ```
-~/.cache/guixvis/index-v3.json.gz
+~/.cache/guixvis/index-v4.bin
 ```
+
+The snapshot exists because parsing the indexer's JSON on every start cost more
+than everything else in the program put together; see the benchmark numbers
+below. It is written to a temp file and renamed into place, so a crash mid-write
+cannot leave a half-written cache behind.
 
 The cache is keyed on your Guix channel commit (from `guix describe`); when
 Guix is updated the cache is rebuilt automatically. A corrupt cache is
@@ -206,6 +221,66 @@ Notes on the original design spec: the `egraph` crate name was evaluated for
 the graph layout, but the crate published under that name is an unrelated
 ML binary, so the layout is a hand-rolled deterministic Fruchterman–Reingold;
 reverse edges are computed in Rust (not Guile) so they are unit-testable.
+
+## Reading the graph
+
+The graph used to be a field of identical dots — technically a graph, useless as
+a picture. It now encodes what you actually want to know:
+
+![guixvis TUI — dependency graph with depth colours and a legend](assets/guixvis-tui-graph.png)
+
+- **Size** is fan-in plus fan-out, so hubs stand out.
+- **Colour** follows BFS depth: bright for the root, plain for direct
+  dependencies, progressively dimmer for deeper ones.
+- **Hue** marks the kind of edge that pulled a package in: propagated inputs
+  lean purple, native inputs lean amber, ordinary inputs stay blue.
+- **Selection** gets a halo, its neighbours brighten, everything else fades
+  back — handy in a dense cluster.
+- **Labels** are drawn for the selection, the root and the biggest hubs that fit
+  the terminal width.
+- The header reports nodes, edges, hidden nodes and how long the layout took;
+  the footer shows the selected package with its dependency counts.
+
+Keys: `Enter` follows the selected node, `+`/`−` change depth, `g` refocuses the
+root, `1`–`4` (or `Tab`) switch tabs, `T` cycles themes.
+
+## Performance
+
+Startup, search and layout are measured, not guessed. `cargo run --release
+--example bench` prints the same numbers on your machine:
+
+| Step | Time | Notes |
+|---|---|---|
+| Index build (`guix repl` + Guile) | **3.7 s** | only when the cache is missing or your channel moved |
+| Cache load → usable index | **30 ms** | binary snapshot, 32,500 packages (was ~126 ms with gzipped JSON) |
+| Fuzzy search, 500 hits | **~2 ms** | nucleo matcher over name + synopsis |
+| Graph layout, 200 nodes | **≤10 ms** | deterministic Fruchterman–Reingold, 300 iterations |
+
+The indexer is fast enough that parallelising it would buy little; the cache
+format is where the time was, so that is where it was spent. The snapshot lives
+at `~/.cache/guixvis/index-v4.bin`, is written atomically, and is keyed on your
+Guix commit.
+
+## Security
+
+guixvis runs on your machine and reads your Guix installation, so the web UI is
+deliberately boring about reachability:
+
+- binds `127.0.0.1` only, and refuses sockets whose peer is not loopback;
+- rejects requests whose `Host` is not `localhost`/`127.0.0.1`/`::1`
+  (DNS-rebinding guard) and whose `Origin` or `Sec-Fetch-Site` marks them as
+  cross-site;
+- serves a strict CSP (`default-src 'self'`), `X-Content-Type-Options`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+  `Cross-Origin-Resource-Policy` and `Cache-Control: no-store` on the API;
+- validates package names from the URL, caps search queries at 200 characters,
+  depth at 1–8 and graph nodes at 200 with a bounded concurrency of four;
+- writes the embedded Guile script into a private `0700` directory as a `0600`
+  file (the system temp directory is world-writable), and refuses absurdly large
+  cache files before reading them.
+
+There is no authentication because there is nothing to authenticate: the API is
+read-only, loopback-only and has no state to change.
 
 ## Development
 

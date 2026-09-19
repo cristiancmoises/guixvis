@@ -11,8 +11,11 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, RwLock};
 
 use axum::extract::{ConnectInfo, Path, Query, State};
-use axum::http::header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, HOST, X_CONTENT_TYPE_OPTIONS};
-use axum::http::{HeaderValue, Request, StatusCode};
+use axum::http::header::{
+    CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, HOST, ORIGIN, REFERRER_POLICY,
+    X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
+};
+use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -194,7 +197,69 @@ async fn local_only(req: Request<axum::body::Body>, next: Next) -> Result<Respon
     if !host_ok || !peer_loopback {
         return Err(StatusCode::FORBIDDEN);
     }
+    // A browser on another site can still reach 127.0.0.1, so refuse
+    // requests it marks as cross-origin. Plain navigations send neither
+    // header and keep working.
+    if let Some(origin) = req.headers().get(ORIGIN).and_then(|h| h.to_str().ok()) {
+        if !origin_is_local(origin) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+    if let Some(site) = req
+        .headers()
+        .get("sec-fetch-site")
+        .and_then(|h| h.to_str().ok())
+    {
+        if site.eq_ignore_ascii_case("cross-site") {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
     Ok(next.run(req).await)
+}
+
+/// Is an `Origin` header value one of ours?
+fn origin_is_local(origin: &str) -> bool {
+    let rest = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+        .unwrap_or(origin);
+    is_local_host(rest)
+}
+
+/// Baseline hardening for every response; the API is never cached.
+async fn security_headers(req: Request<axum::body::Body>, next: Next) -> Response {
+    let api = req.uri().path().starts_with("/api/");
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    headers.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("geolocation=(), microphone=(), camera=(), payment=(), usb=()"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    if api {
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    res
+}
+
+/// Package names come from the URL; keep them to what Guix actually uses so
+/// nothing exotic reaches the index or the JSON encoder.
+fn valid_package_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.' | '_'))
 }
 
 fn is_local_host(host: &str) -> bool {
@@ -224,6 +289,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/search", get(search))
         .route("/api/v1/package/{name}", get(package))
         .route("/api/v1/graph/{name}", get(graph))
+        .layer(middleware::from_fn(security_headers))
         .layer(middleware::from_fn(local_only))
         .with_state(state)
 }
@@ -364,6 +430,9 @@ async fn package(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Response, ApiError> {
+    if !valid_package_name(&name) {
+        return Err(ApiError::BadRequest("invalid package name".into()));
+    }
     let Some((index, _, generation)) = state.snapshot() else {
         return Err(ApiError::Unavailable("index is still building".into()));
     };
@@ -446,6 +515,9 @@ async fn graph(
     Path(name): Path<String>,
     Query(params): Query<GraphParams>,
 ) -> Result<Response, ApiError> {
+    if !valid_package_name(&name) {
+        return Err(ApiError::BadRequest("invalid package name".into()));
+    }
     let dir = match params.dir.as_deref() {
         None | Some("deps") => Dir::Deps,
         Some("reverse") | Some("dependents") => Dir::Dependents,

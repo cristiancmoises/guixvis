@@ -249,3 +249,77 @@ async fn live_bind_loopback_and_fetch() {
     let _ = tx.send(());
     handle.await.unwrap();
 }
+
+#[tokio::test]
+async fn responses_carry_hardening_headers() {
+    let res = router(state())
+        .oneshot(get("/api/v1/health"))
+        .await
+        .expect("call");
+    let headers = res.headers();
+    assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    assert_eq!(headers.get("x-frame-options").unwrap(), "DENY");
+    assert_eq!(headers.get("referrer-policy").unwrap(), "no-referrer");
+    assert_eq!(
+        headers.get("cross-origin-resource-policy").unwrap(),
+        "same-origin"
+    );
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+}
+
+#[tokio::test]
+async fn cross_site_requests_are_refused() {
+    // A browser on another origin sends Origin/Sec-Fetch-Site; loopback alone
+    // is not proof that the caller is friendly.
+    let res = router(state())
+        .oneshot(
+            Request::get("/api/v1/health")
+                .header("host", "127.0.0.1:8787")
+                .header("origin", "http://evil.example")
+                .header("sec-fetch-site", "cross-site")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("call");
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+    // Our own origin still works.
+    let res = router(state())
+        .oneshot(
+            Request::get("/api/v1/health")
+                .header("host", "127.0.0.1:8787")
+                .header("origin", "http://127.0.0.1:8787")
+                .header("sec-fetch-site", "same-origin")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("call");
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn exotic_package_names_are_rejected() {
+    for name in ["has%20space", "dot.dot", "a".repeat(200).as_str()] {
+        let res = router(state())
+            .oneshot(get(&format!("/api/v1/package/{name}")))
+            .await
+            .expect("call");
+        assert!(
+            res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::NOT_FOUND,
+            "{name} produced {}",
+            res.status()
+        );
+    }
+    // A normal name still resolves (and gtk+ keeps its plus sign).
+    for name in ["emacs", "gtk%2B", "pkg-config"] {
+        let res = router(state())
+            .oneshot(get(&format!("/api/v1/package/{name}")))
+            .await
+            .expect("call");
+        assert_eq!(res.status(), StatusCode::OK, "{name} was refused");
+    }
+}
