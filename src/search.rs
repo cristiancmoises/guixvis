@@ -133,13 +133,26 @@ struct Haystacks {
     combined: Vec<Utf32String>,
     names: Vec<Utf32String>,
     name_len: Vec<u32>, // char length of each package name
-    by_name: Vec<u32>,  // package ids sorted by name (empty-query browse)
+    /// Lowercased name + synopsis, for the candidate prefilter.
+    lower: Vec<String>,
+    /// Lowercased names, for the substring boost.
+    lower_names: Vec<String>,
+    /// Global byte frequencies over the folded haystacks: the prefilter
+    /// checks only the rarest byte of each term, which skips the most
+    /// candidates for a single memchr per candidate.
+    byte_freq: [u32; 256],
+    /// Package ids ordered for the empty-query browse: the highest-fan-in
+    /// hubs first (name breaks ties), because that is what people want to
+    /// find before they type anything.
+    by_hub: Vec<u32>,
 }
 
 fn build_haystacks(index: &Index) -> Haystacks {
     let mut combined = Vec::with_capacity(index.len());
     let mut names = Vec::with_capacity(index.len());
     let mut name_len = Vec::with_capacity(index.len());
+    let mut lower = Vec::with_capacity(index.len());
+    let mut lower_names = Vec::with_capacity(index.len());
     for p in &index.packages {
         let name_len_c = p.name.chars().count();
         let name = Utf32String::from(p.name.as_ref());
@@ -151,19 +164,33 @@ fn build_haystacks(index: &Index) -> Haystacks {
         hay.push_str(&syn_trunc);
         name_len.push(name_len_c as u32);
         names.push(name);
+        lower_names.push(p.name.to_lowercase());
+        lower.push(hay.to_lowercase());
         combined.push(Utf32String::from(hay));
     }
-    let mut by_name: Vec<u32> = (0..index.packages.len() as u32).collect();
-    by_name.sort_by(|a, b| {
-        index.packages[*a as usize]
-            .name
-            .cmp(&index.packages[*b as usize].name)
+    let mut freq = [0u32; 256];
+    for hay in &lower {
+        for &b in hay.as_bytes() {
+            freq[b as usize] += 1;
+        }
+    }
+    let mut by_hub: Vec<u32> = (0..index.packages.len() as u32).collect();
+    by_hub.sort_by(|a, b| {
+        let pa = &index.packages[*a as usize];
+        let pb = &index.packages[*b as usize];
+        index
+            .dependents_count(*b)
+            .cmp(&index.dependents_count(*a))
+            .then_with(|| pa.name.cmp(&pb.name))
     });
     Haystacks {
         combined,
         names,
         name_len,
-        by_name,
+        lower,
+        lower_names,
+        byte_freq: freq,
+        by_hub,
     }
 }
 
@@ -199,12 +226,10 @@ fn worker_loop(
 }
 
 fn scan(index: &Index, hay: &Haystacks, query: &str, limit: usize) -> Vec<HighlightedHit> {
-    let pattern = Pattern::parse(query.trim(), CaseMatching::Smart, Normalization::Smart);
-
-    // Empty query: browse the first `limit` packages alphabetically.
+    // Empty query: browse the hubs (highest fan-in first), not the alphabet.
     if query.trim().is_empty() {
         return hay
-            .by_name
+            .by_hub
             .iter()
             .take(limit)
             .map(|id| HighlightedHit {
@@ -219,6 +244,37 @@ fn scan(index: &Index, hay: &Haystacks, query: &str, limit: usize) -> Vec<Highli
             .collect();
     }
 
+    // Terms are AND-ed: a package must match every one of them. Per-term
+    // scores combine as their geometric mean, so one weak term can pull a
+    // strong one down but never erase it entirely.
+    let terms: Vec<&str> = query.split_whitespace().collect();
+    let patterns: Vec<Pattern> = terms
+        .iter()
+        .map(|t| Pattern::parse(t, CaseMatching::Smart, Normalization::Smart))
+        .collect();
+    let query_folded = query.to_lowercase();
+
+    // Prefilter: a fuzzy match needs every byte of every (ASCII) term in the
+    // haystack, so checking just the rarest byte of each term rejects the
+    // most candidates for one memchr each. Non-ASCII terms take the safe
+    // path, because Smart normalization can rewrite their bytes.
+    // The check only pays for itself when the rare byte actually rejects:
+    // a byte present in almost every haystack costs a memchr and filters
+    // nothing, so those terms skip the prefilter altogether.
+    let total = index.len() as u32;
+    let rarest: Vec<Option<u8>> = terms
+        .iter()
+        .map(|t| {
+            let best = t
+                .as_bytes()
+                .iter()
+                .filter(|b| b.is_ascii())
+                .copied()
+                .min_by_key(|b| hay.byte_freq[*b as usize])?;
+            (hay.byte_freq[best as usize] * 100 < total * 80).then_some(best)
+        })
+        .collect();
+
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
@@ -228,23 +284,53 @@ fn scan(index: &Index, hay: &Haystacks, query: &str, limit: usize) -> Vec<Highli
         let mut handles = Vec::with_capacity(ranges.len());
         for (start, end) in &ranges {
             let index = &index;
-            let pattern = &pattern;
+            let patterns = &patterns;
+            let rarest = &rarest;
+            let query_folded = &query_folded;
             handles.push(scope.spawn(move || {
                 let mut matcher = Matcher::new(Config::DEFAULT);
                 let mut local: Vec<SearchHit> = Vec::new();
-                for i in *start..*end {
-                    let combined = hay.combined[i].slice(..);
-                    let score = pattern.score(combined, &mut matcher);
-                    if let Some(score) = score {
-                        let name_match = pattern
-                            .score(hay.names[i].slice(..), &mut matcher)
-                            .is_some();
-                        local.push(SearchHit {
-                            id: i as u32,
-                            score,
-                            name_match,
-                        });
+                'candidates: for i in *start..*end {
+                    for &b in rarest {
+                        if let Some(b) = b {
+                            if !hay.lower[i].as_bytes().contains(&b) {
+                                continue 'candidates;
+                            }
+                        }
                     }
+
+                    // Every term must score; combine as a geometric mean.
+                    let mut log_sum = 0.0f64;
+                    let mut name_match = true;
+                    for (pi, pattern) in patterns.iter().enumerate() {
+                        let Some(score) = pattern.score(hay.combined[i].slice(..), &mut matcher)
+                        else {
+                            continue 'candidates;
+                        };
+                        log_sum += (score.max(1) as f64).ln();
+                        if name_match && pi < patterns.len() {
+                            name_match = pattern
+                                .score(hay.names[i].slice(..), &mut matcher)
+                                .is_some();
+                        }
+                    }
+                    let score = (log_sum / patterns.len() as f64).exp() as u32;
+
+                    // Substring boosts: an exact hit on the name beats a fuzzy
+                    // one; a hit in the synopsis beats a scattered match.
+                    let score = if hay.lower_names[i].contains(query_folded.as_str()) {
+                        score.saturating_add(700)
+                    } else if hay.lower[i].contains(query_folded.as_str()) {
+                        score.saturating_add(200)
+                    } else {
+                        score
+                    };
+
+                    local.push(SearchHit {
+                        id: i as u32,
+                        score,
+                        name_match,
+                    });
                 }
                 local.sort_unstable_by(|a, b| hit_cmp(index, a, b));
                 local.truncate(limit);
@@ -261,7 +347,8 @@ fn scan(index: &Index, hay: &Haystacks, query: &str, limit: usize) -> Vec<Highli
     hits.sort_unstable_by(|a, b| hit_cmp(index, a, b));
     hits.truncate(limit);
 
-    // Precompute highlight ranges for the displayed prefix.
+    // Precompute highlight ranges for the displayed prefix: the union of the
+    // per-term match indices, merged into runs.
     let mut matcher = Matcher::new(Config::DEFAULT);
     hits.into_iter()
         .enumerate()
@@ -273,27 +360,33 @@ fn scan(index: &Index, hay: &Haystacks, query: &str, limit: usize) -> Vec<Highli
                     synopsis_ranges: Vec::new(),
                 };
             }
-            let mut indices = Vec::new();
             let id = hit.id as usize;
             let name_len = hay.name_len[id] as usize;
-            let _ = pattern.indices(hay.combined[id].slice(..), &mut matcher, &mut indices);
+            let mut indices: Vec<u32> = Vec::new();
+            for pattern in &patterns {
+                let mut part = Vec::new();
+                let _ = pattern.indices(hay.combined[id].slice(..), &mut matcher, &mut part);
+                indices.extend(part);
+            }
+            indices.sort_unstable();
+            indices.dedup();
             let mut name_ranges = Vec::new();
             let mut synopsis_ranges = Vec::new();
             let mut run: Option<(usize, usize)> = None;
             for idx in indices {
                 let idx = idx as usize;
                 match run {
-                    Some((s, e)) if idx == e => run = Some((s, e + 1)),
+                    Some((st, e)) if idx == e => run = Some((st, e + 1)),
                     _ => {
-                        if let Some((s, e)) = run.take() {
-                            push_range(name_len, s, e, &mut name_ranges, &mut synopsis_ranges);
+                        if let Some((st, e)) = run.take() {
+                            push_range(name_len, st, e, &mut name_ranges, &mut synopsis_ranges);
                         }
                         run = Some((idx, idx + 1));
                     }
                 }
             }
-            if let Some((s, e)) = run {
-                push_range(name_len, s, e, &mut name_ranges, &mut synopsis_ranges);
+            if let Some((st, e)) = run {
+                push_range(name_len, st, e, &mut name_ranges, &mut synopsis_ranges);
             }
             HighlightedHit {
                 hit,

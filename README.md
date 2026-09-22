@@ -30,8 +30,10 @@ whatever does not suit you.
 
 ## Features
 
-- **Search anything** — fuzzy search across all packages (name + synopsis),
-  highlighted matches, ~4 ms per keystroke over the full 32,500-package set.
+- **Search anything** — fuzzy search across all packages (name + synopsis):
+  several words are AND-ed, names beat synopsis matches, exact substrings beat
+  scattered ones, and every row shows its dependency counts and license so the
+  list answers questions instead of just ranking names.
 - **Package details** — version, description, licenses, homepage, and the
   source location (`gnu/packages/emacs.scm:591`).
 - **Dependencies** — expandable tree of inputs (`P` propagated, `N` native),
@@ -40,8 +42,10 @@ whatever does not suit you.
   a depth-limited transitive section.
 - **Dependency graph** — force-directed layout (hand-rolled Fruchterman–
   Reingold, deterministic), follow nodes with Enter, depth control with `+/−`.
-- **Instant startup on later runs** — the index is cached as gzipped JSON and
-  automatically rebuilt when your Guix channel commit changes.
+- **Instant startup on later runs** — the index is cached as a binary
+  snapshot and automatically rebuilt when your Guix channel commit changes;
+  the empty search box browses the highest-fan-in hubs instead of the
+  alphabet.
 - **Zero configuration** — works on any GNU Guix system; first run builds the
   index in the background with live progress.
 
@@ -70,7 +74,10 @@ Reverse dependencies (who depends on this package):
 panel with clickable related-package chips, and the interactive graph where
 every bubble is a package — click one to open its view. Deep links
 (`#/p/emacs?depth=2&dir=reverse`) are shareable and work with the browser
-back button; the layout is responsive down to phone sizes.
+back button; the layout is responsive down to phone sizes. Result rows carry
+the license chip and the dependency/dependent counts, and a name that only
+matched through its synopsis renders dimmed — so "why is this here?" answers
+itself.
 
 Names above the bubbles are placed with measured boxes and a background halo:
 labels that would collide are simply not drawn (the hover tooltip still names
@@ -297,7 +304,7 @@ Startup, search and layout are measured, not guessed. `cargo run --release
 |---|---|---|
 | Index build (`guix repl` + Guile) | **3.7 s** | only when the cache is missing or your channel moved |
 | Cache load → usable index | **30 ms** | binary snapshot, 32,500 packages (was ~126 ms with gzipped JSON) |
-| Fuzzy search, 500 hits | **~2 ms** | nucleo matcher over name + synopsis |
+| Fuzzy search, 500 hits | **~3 ms** | nucleo over name + synopsis; several terms are AND-ed and ranked as their geometric mean |
 | Graph layout, 200 nodes | **≤10 ms** | deterministic Fruchterman–Reingold, 300 iterations |
 | Graph API payload | **33 KB → 4.8 KB** | gzipped when the browser asks for it |
 

@@ -335,6 +335,9 @@ async fn static_assets_carry_the_policy_too() {
             .headers()
             .get("content-security-policy")
             .unwrap_or_else(|| panic!("{path} has no CSP"));
-        assert!(csp.to_str().unwrap().contains("default-src 'self'"), "{path}");
+        assert!(
+            csp.to_str().unwrap().contains("default-src 'self'"),
+            "{path}"
+        );
     }
 }

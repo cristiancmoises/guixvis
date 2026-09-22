@@ -188,6 +188,9 @@ body {
   align-items: baseline;
 }
 #results li[aria-selected="true"] { background: var(--sel); }
+.r-name-syn { color: var(--muted) !important; }
+.r-lic { color: var(--badge-n); margin-left: 6px; font-size: 12px; }
+.r-counts { color: var(--muted); margin-left: 8px; font-size: 12px; }
 #results .r-name { font-weight: 600; color: var(--accent); }
 #results .r-ver { color: var(--muted); font-size: 13px; }
 #results .r-syn { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

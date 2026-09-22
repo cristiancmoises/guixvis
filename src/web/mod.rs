@@ -456,7 +456,10 @@ async fn search(
                 "name": p.name.as_ref(),
                 "version": p.version.as_ref(),
                 "synopsis": p.synopsis.as_ref(),
+                "deps": p.dep_count(),
                 "dependents": index_for_items.dependents_count(p.id),
+                "license": p.licenses.first().map(|l| l.as_ref()),
+                "nameMatch": h.hit.name_match,
                 "name_spans": h.name_ranges,
                 "synopsis_spans": h.synopsis_ranges,
             })

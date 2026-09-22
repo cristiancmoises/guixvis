@@ -50,15 +50,84 @@ fn emac_ranks_emacs_first() {
 }
 
 #[test]
-fn empty_query_browses_alphabetically() {
+fn empty_query_browses_hubs_first() {
     let index = Arc::new(load_fixture());
     let worker = SearchWorker::spawn(index);
     worker.send(String::new());
     let reply = await_reply(&worker, 0);
     assert_eq!(reply.hits.len(), 10);
     let index = load_fixture();
+    // Highest fan-in first; zlib tops the fixture.
     let first = &index.packages[reply.hits[0].hit.id as usize].name;
-    assert_eq!(first.as_ref(), "cyc-a");
+    assert_eq!(first.as_ref(), "zlib");
+    let counts: Vec<usize> = reply
+        .hits
+        .iter()
+        .map(|h| index.dependents_count(h.hit.id))
+        .collect();
+    let mut sorted = counts.clone();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(counts, sorted, "browse order is by dependent count");
+}
+
+#[test]
+fn terms_are_and_ed() {
+    let index = Arc::new(load_fixture());
+    let engine = guixvis::search::SearchEngine::new(&index);
+    // "emacs" plus a term only the GNU Emacs synopsis carries.
+    let hits = engine.search(&index, "emacs extensible", 50);
+    assert!(!hits.is_empty());
+    for h in &hits {
+        let p = &index.packages[h.hit.id as usize];
+        let hay = format!("{} {}", p.name, p.synopsis).to_lowercase();
+        assert!(hay.contains("emacs") && hay.contains("extensible"));
+    }
+    // A term that matches nothing yields nothing.
+    let hits = engine.search(&index, "emacs zzzqqq", 50);
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn name_substring_beats_synopsis_match() {
+    let index = Arc::new(load_fixture());
+    let engine = guixvis::search::SearchEngine::new(&index);
+    let hits = engine.search(&index, "emacs", 50);
+    assert!(!hits.is_empty());
+    // Every top hit matches the name, and the plain "emacs" package is first.
+    let first = &index.packages[hits[0].hit.id as usize].name;
+    assert_eq!(first.as_ref(), "emacs");
+    assert!(hits.iter().all(|h| h.hit.name_match));
+}
+
+#[test]
+fn prefilter_preserves_exact_result_set() {
+    // The candidate prefilter must be a pure optimization: for every query,
+    // the same ids must come back as the brute-force scorer produces.
+    let index = Arc::new(load_fixture());
+    let engine = guixvis::search::SearchEngine::new(&index);
+    let index_ref = &index;
+    for query in ["e", "emac", "gtk", "cyc", "pkg-config", "texinfo"] {
+        let hits = engine.search(index_ref, query, 50);
+        let ids: Vec<u32> = hits.iter().map(|h| h.hit.id).collect();
+        // Brute force: score every package with nucleo, no prefilter.
+        let mut expect = Vec::new();
+        let pattern = nucleo_matcher::pattern::Pattern::parse(
+            query,
+            nucleo_matcher::pattern::CaseMatching::Smart,
+            nucleo_matcher::pattern::Normalization::Smart,
+        );
+        let mut matcher = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);
+        for (i, p) in index_ref.packages.iter().enumerate() {
+            let hay = format!("{} {}", p.name, p.synopsis);
+            let h = nucleo_matcher::Utf32String::from(hay);
+            if pattern.score(h.slice(..), &mut matcher).is_some() {
+                expect.push(i as u32);
+            }
+        }
+        let got: std::collections::HashSet<u32> = ids.iter().copied().collect();
+        let want: std::collections::HashSet<u32> = expect.iter().copied().collect();
+        assert_eq!(got, want, "query {query:?} changed the result set");
+    }
 }
 
 #[test]

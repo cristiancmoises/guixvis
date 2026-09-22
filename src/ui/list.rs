@@ -20,7 +20,7 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
         .title(format!(
             " results {}",
             if app.query.is_empty() {
-                "(browsing, type to search)".to_string()
+                "(hubs first · type to search)".to_string()
             } else {
                 format!("({})", app.results.len())
             }
@@ -71,21 +71,44 @@ fn render_hit(app: &App, th: &Theme, hit: &HighlightedHit) -> Line<'static> {
     let p = &index.packages[hit.hit.id as usize];
     let name = p.name.as_ref();
     let version = p.version.as_ref();
-    let synopsis: String = p.synopsis.chars().take(120).collect();
+    let synopsis: String = p.synopsis.chars().take(96).collect();
 
     let mut spans: Vec<Span> = Vec::new();
-    push_highlighted(
-        &mut spans,
-        name,
-        &hit.name_ranges,
-        Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
-    );
+    // A name that the query did not match renders dimmed: the row is here
+    // because of its synopsis, and the eye should not treat it as a name hit.
+    let name_style = if !hit.hit.name_match && !app.query.is_empty() {
+        Style::default().fg(th.muted)
+    } else {
+        Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
+    };
+    push_highlighted(&mut spans, name, &hit.name_ranges, name_style);
     if !version.is_empty() {
         spans.push(Span::styled(
             format!(" {version}"),
             Style::default().fg(th.muted),
         ));
     }
+    // License chip.
+    if let Some(lic) = p.licenses.first() {
+        let extra = p.licenses.len().saturating_sub(1);
+        let label = if extra > 0 {
+            format!("{lic}+{extra}")
+        } else {
+            lic.to_string()
+        };
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            format!("·{label}"),
+            Style::default().fg(th.badge_n),
+        ));
+    }
+    // Facts that matter before you press Enter.
+    let deps = p.dep_count();
+    let dependents = index.dependents_count(p.id);
+    spans.push(Span::styled(
+        format!("  ⤵{deps} ⤴{dependents}"),
+        Style::default().fg(th.muted),
+    ));
     if !synopsis.is_empty() {
         spans.push(Span::raw("  "));
         push_highlighted(&mut spans, &synopsis, &hit.synopsis_ranges, th.matched);

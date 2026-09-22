@@ -413,13 +413,25 @@
         li.setAttribute("role", "option");
         li.setAttribute("aria-selected", String(i === searchIndex));
         const name = spanWithMarks(item.name, item.name_spans);
-        name.className = "r-name";
+        name.className = "r-name" + (item.nameMatch === false ? " r-name-syn" : "");
         li.append(name);
         if (item.version) {
           const v = document.createElement("span");
           v.className = "r-ver";
           v.textContent = item.version;
           li.append(v);
+        }
+        if (item.license) {
+          const l = document.createElement("span");
+          l.className = "r-lic";
+          l.textContent = "·" + item.license;
+          li.append(l);
+        }
+        if (item.deps != null) {
+          const c = document.createElement("span");
+          c.className = "r-counts";
+          c.textContent = `⤵${item.deps} ⤴${item.dependents}`;
+          li.append(c);
         }
         if (item.synopsis) {
           const s = spanWithMarks(item.synopsis, item.synopsis_spans);

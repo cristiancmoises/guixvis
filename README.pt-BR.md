@@ -294,7 +294,7 @@ Partida, busca e layout são medidos, não estimados. `cargo run --release
 |---|---|---|
 | Construção do índice (`guix repl` + Guile) | **3,7 s** | só quando o cache falta ou o canal mudou |
 | Cache até índice utilizável | **30 ms** | snapshot binário, 32.500 pacotes (era ~126 ms com JSON gzipado) |
-| Busca fuzzy, 500 resultados | **~2 ms** | matcher nucleo sobre nome + sinopse |
+| Busca fuzzy, 500 resultados | **~3 ms** | nucleo sobre nome + sinopse; vários termos entram em E e são ranqueados pela média geométrica |
 | Layout do grafo, 200 nós | **≤10 ms** | Fruchterman–Reingold determinístico, 300 iterações |
 | Payload da API de grafo | **33 KB → 4,8 KB** | gzip quando o navegador pede |
 
