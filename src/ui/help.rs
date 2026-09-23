@@ -35,7 +35,7 @@ pub fn draw(f: &mut Frame, _app: &App, th: &Theme, area: Rect) {
         ("e", "graph edges (all / focus / none)"),
         ("l", "graph labels on / off"),
         ("o", "open homepage in browser"),
-        ("T", "cycle theme (8 palettes)"),
+        ("T", "cycle and save theme (9 palettes)"),
         ("R", "rebuild index"),
         ("q / Ctrl+C", "quit"),
     ];

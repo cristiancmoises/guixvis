@@ -36,8 +36,8 @@ class GraphEngine {
     this.edges = edges;
     this.reducedMotion = !!opts.reducedMotion;
     this.names = nodes.map((n) => n.name);
-    this.byName = new Map();
-    this.names.forEach((name) => this.byName.set(name, name));
+    this.byName = new Map(nodes.map((node) => [node.name, node]));
+    this.radii = new Map(nodes.map((node) => [node.name, radiusOf(node.degree)]));
     this.adj = new Map();
     this.names.forEach((n) => this.adj.set(n, []));
     for (const e of edges) {
@@ -55,7 +55,6 @@ class GraphEngine {
     /* World units per CSS px; set by the canvas before layout runs. */
     this.unit = 1 / 200;
     this.seedPositions();
-    this.pinRoot();
   }
 
   /* Initial placement: reuse previous layout when possible, else a ring. */
@@ -93,8 +92,7 @@ class GraphEngine {
   }
 
   radiusOfWorld(name) {
-    const node = this.node(name);
-    return (node ? radiusOf(node.degree) : 8) * this.unit;
+    return (this.radii.get(name) || 8) * this.unit;
   }
 
   /* One Fruchterman–Reingold step with radial springs and collision.
@@ -230,13 +228,13 @@ class GraphEngine {
   }
 
   node(name) {
-    return this.nodes[this.names.indexOf(name)] || null;
+    return this.byName.get(name) || null;
   }
 
   /* Run until settled (reduced motion / tests). */
   settle(maxTicks = 600) {
     let ticks = 0;
-    while (this.tick() && ticks < maxTicks) ticks += 1;
+    while (ticks < maxTicks && this.tick()) ticks += 1;
     this.separate();
   }
 
@@ -378,32 +376,42 @@ class GraphCanvas {
       rootAlt: hexToRgb(accent2, [186, 120, 255]),
       selected: hexToRgb(warn, [255, 214, 90]),
       label: rgba(fg, 0.95, [220, 224, 232]),
-      labelDim: rgba(fg, 0.55, [220, 224, 232]),
+      labelDim: rgba(fg, 0.75, [220, 224, 232]),
       halo: rgba(accent, 0.25, [94, 196, 255]),
       skeleton: rgba(muted, 0.35, [140, 150, 170]),
     };
     this.glow = glow;
     this.bgHex = read("--bg", "#0a0c10");
+    this.invalidate();
+  }
+
+  invalidate() {
+    if (this.onInvalidate) this.onInvalidate();
   }
 
   setGraph(engine, { root, selected, skeleton = false } = {}) {
     this.engine = engine;
-    this.rootName = root || engine.names[0];
+    this.rootName = root || (engine ? engine.names[0] : null);
     this.selected = selected || null;
     this.hovered = null;
     this.skeleton = skeleton;
     this.loadedAt = performance.now();
-    engine.unit = 1 / this.fitScale();
+    if (engine) {
+      engine.unit = 1 / this.fitScale();
+      if (engine.reducedMotion) engine.settle();
+    }
     this.fit();
+    this.invalidate();
   }
 
   setSkeleton(on) {
     this.skeleton = on;
+    this.invalidate();
   }
 
   /* Scale that fits the world frame [-1.6,1.6]x[-1,1] in the viewport. */
   fitScale() {
-    return Math.min(this.w, this.h) / 3.4;
+    return Math.max(1, Math.min(this.w, this.h) / 3.4);
   }
 
   fit() {
@@ -420,6 +428,7 @@ class GraphCanvas {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (this.engine) this.engine.unit = 1 / this.fitScale();
     if (!this.userTransformed) this.fit();
+    this.invalidate();
   }
 
   /* world <- screen */
@@ -430,28 +439,29 @@ class GraphCanvas {
   /* Run layout ticks (up to 4 per frame) and repaint. */
   frame() {
     if (!this.engine || this.skeleton) {
-      this.drawSkeleton();
-      return;
+      if (this.skeleton) this.drawSkeleton();
+      else this.ctx.clearRect(0, 0, this.w, this.h);
+      return this.skeleton && !this.reducedMotion;
     }
-    if (!this.engine.reducedMotion) {
+    if (!this.engine.reducedMotion && !this.engine.separated) {
       let budget = 4;
-      let running = false;
-      while (budget > 0 && this.engine.tick()) {
+      while (budget > 0) {
         budget -= 1;
-        running = true;
-      }
-      if (!running && !this.engine.separated) {
-        this.engine.separate();
+        if (!this.engine.tick()) {
+          this.engine.separate();
+          break;
+        }
       }
     }
     this.paint();
+    return !this.engine.separated || (!this.engine.reducedMotion && performance.now() - this.loadedAt < 180);
   }
 
   drawSkeleton() {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.w, this.h);
     ctx.fillStyle = this.colors.skeleton;
-    const t = performance.now() / 1000;
+    const t = this.reducedMotion ? 0 : performance.now() / 1000;
     for (let i = 0; i < 26; i++) {
       const a = (i / 26) * Math.PI * 2 + t * 0.4;
       const r = 0.3 + 0.12 * Math.sin(i * 3.7);
@@ -471,7 +481,7 @@ class GraphCanvas {
     ctx.translate(this.tx, this.ty);
     ctx.scale(this.scale, this.scale);
 
-    const fadeIn = Math.min(1, (performance.now() - this.loadedAt) / 180);
+    const fadeIn = eng.reducedMotion ? 1 : Math.min(1, (performance.now() - this.loadedAt) / 180);
     ctx.globalAlpha = fadeIn;
     const unit = eng.unit;
 
@@ -542,11 +552,10 @@ class GraphCanvas {
         ctx.stroke();
       }
       if (isSel && !eng.reducedMotion) {
-        const pulse = 1 + 0.08 * Math.sin(performance.now() / 380);
         ctx.strokeStyle = this.colors.halo;
         ctx.lineWidth = 2 * unit;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, r * pulse + 5 * unit, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, r + 5 * unit, 0, Math.PI * 2);
         ctx.stroke();
       }
     }
@@ -661,8 +670,18 @@ class GraphCanvas {
     });
 
     c.addEventListener("pointermove", (ev) => {
-      if (!pointers.has(ev.pointerId)) return;
       const p = posOf(ev);
+      if (!pointers.has(ev.pointerId)) {
+        const world = this.toWorld(p.x, p.y);
+        const hover = this.engine ? this.engine.pick(world.x, world.y) : null;
+        if (hover !== this.hovered) {
+          this.hovered = hover;
+          c.style.cursor = hover ? "pointer" : "grab";
+          this.invalidate();
+        }
+        return;
+      }
+      this.invalidate();
       const prev = pointers.get(ev.pointerId);
       const dx = p.x - prev.x;
       const dy = p.y - prev.y;
@@ -715,11 +734,13 @@ class GraphCanvas {
         this.onTransform({ selected: null });
       }
       panning = false;
+      this.invalidate();
     });
 
     c.addEventListener("pointercancel", () => {
       clearTimeout(longPressTimer);
       pointers.clear();
+      if (dragNode && this.engine) this.engine.setPinned(dragNode, false);
       dragNode = null;
       panning = false;
     });
@@ -737,24 +758,30 @@ class GraphCanvas {
         this.tx = p.x - world.x * s;
         this.ty = p.y - world.y * s;
         this.userTransformed = true;
+        this.invalidate();
       },
       { passive: false }
     );
 
     c.addEventListener("contextmenu", (ev) => ev.preventDefault());
+    c.addEventListener("pointerleave", () => this.clearHover());
   }
 
   selectNode(name) {
     this.selected = name;
+    this.invalidate();
   }
   clearSelection() {
     this.selected = null;
+    this.invalidate();
   }
   hoverNode(name) {
     this.hovered = name;
+    this.invalidate();
   }
   clearHover() {
     this.hovered = null;
+    this.invalidate();
   }
 }
 

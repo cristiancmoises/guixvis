@@ -21,6 +21,10 @@ struct Cli {
     #[arg(short, long, global = true)]
     rebuild: bool,
 
+    /// Terminal color theme (overrides the saved choice for this run)
+    #[arg(long, value_parser = guixvis::theme::THEME_IDS)]
+    theme: Option<String>,
+
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -39,7 +43,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(Cmd::Web { port }) => run_web(cli.rebuild, port),
-        None => run_tui(cli.rebuild),
+        None => run_tui(cli.rebuild, cli.theme.as_deref()),
     }
 }
 
@@ -59,8 +63,11 @@ fn run_web(_rebuild: bool, _port: u16) -> anyhow::Result<()> {
     std::process::exit(1);
 }
 
-fn run_tui(rebuild: bool) -> anyhow::Result<()> {
+fn run_tui(rebuild: bool, theme: Option<&str>) -> anyhow::Result<()> {
     let mut app = App::new(rebuild);
+    if let Some(index) = theme.and_then(guixvis::theme::theme_index) {
+        app.theme_idx = index;
+    }
     let mut terminal: DefaultTerminal = ratatui::init();
 
     // Restore the terminal even if a panic escapes the event loop.
@@ -83,7 +90,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
         .map(|s| (s.width, s.height))
         .unwrap_or((80, 24));
     loop {
-        let poll = if app.animating() || app.graph_dirty {
+        let poll = if app.search_pending() {
+            Duration::from_millis(16)
+        } else if app.animating() || app.graph_dirty {
             Duration::from_millis(33)
         } else {
             Duration::from_millis(250)

@@ -64,6 +64,21 @@ pub enum NodeKind {
 
 pub type NodeKey = (u32, NodeKind);
 
+/// Channel metadata may contain arbitrary URI schemes; only open web pages.
+fn is_web_homepage(url: &str) -> bool {
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    !rest.is_empty()
+        && !rest.starts_with('/')
+        && !rest.starts_with('?')
+        && !rest.starts_with('#')
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
 #[derive(Debug, Default)]
 pub struct TreeState {
     /// Keys of nodes whose children are expanded.
@@ -92,6 +107,7 @@ pub struct App {
     last_edit: Instant,
     pub results: Vec<HighlightedHit>,
     rendered_ticket: u64,
+    requested_ticket: u64,
     pub cursor: usize,
     pub scroll: usize,
     pub tab: Tab,
@@ -130,13 +146,14 @@ impl App {
             last_edit: Instant::now(),
             results: Vec::new(),
             rendered_ticket: 0,
+            requested_ticket: 0,
             cursor: 0,
             scroll: 0,
             tab: Tab::Overview,
             tree: TreeState::default(),
             rev: RevState::default(),
             graph: GraphView::default(),
-            theme_idx: 0,
+            theme_idx: crate::theme::saved_theme(),
             help_open: false,
             dirty: true,
             tick: 0,
@@ -163,6 +180,11 @@ impl App {
 
     pub fn animating(&self) -> bool {
         matches!(self.phase, Phase::Loading { .. })
+    }
+
+    /// Keep input and reply polling responsive until the current query settles.
+    pub fn search_pending(&self) -> bool {
+        self.pending_query.is_some() || self.requested_ticket > self.rendered_ticket
     }
 
     /// Pump loader/indexer events. Returns true if something changed.
@@ -220,6 +242,9 @@ impl App {
             return false;
         };
         self.rendered_ticket = reply.ticket;
+        if reply.ticket != self.requested_ticket || reply.query != self.query {
+            return false;
+        }
         self.results = reply.hits;
         self.cursor = 0;
         self.scroll = 0;
@@ -240,7 +265,7 @@ impl App {
 
     fn dispatch_query(&mut self, query: String) {
         if let Some(search) = self.search.as_ref() {
-            search.send(query);
+            self.requested_ticket = search.send(query);
         }
     }
 
@@ -273,7 +298,7 @@ impl App {
         let Some(pkg) = self.selected_pkg() else {
             return;
         };
-        if pkg.homepage.is_empty() {
+        if !is_web_homepage(&pkg.homepage) {
             return;
         }
         let url = pkg.homepage.as_ref();
@@ -467,6 +492,7 @@ impl App {
                 // On terminals uppercase T always carries SHIFT; keep a
                 // single forward cycle so the key never types into search.
                 self.theme_idx = (self.theme_idx + 1) % crate::theme::THEMES.len();
+                let _ = crate::theme::save_theme(self.theme_idx);
                 self.dirty = true;
             }
             KeyCode::Char('R') => {
@@ -671,5 +697,112 @@ impl App {
         if len == 0 {
             self.cursor = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod homepage_tests {
+    use super::is_web_homepage;
+
+    #[test]
+    fn only_web_homepages_can_be_launched() {
+        assert!(is_web_homepage("https://gnu.org/software/emacs/"));
+        assert!(is_web_homepage("http://example.org"));
+        for url in [
+            "",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "--help",
+            "https://",
+            "https:///file",
+            "https://example.org\n",
+        ] {
+            assert!(!is_web_homepage(url), "{url:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn fixture_app() -> App {
+        let document = serde_json::from_str(include_str!("../tests/fixtures/small.json")).unwrap();
+        let index = Arc::new(Index::from_doc(document, 0).unwrap());
+        App {
+            search: Some(SearchWorker::spawn(Arc::clone(&index))),
+            index: Some(index),
+            phase: Phase::Ready {
+                fresh: true,
+                unkeyed: false,
+            },
+            query: String::new(),
+            pending_query: None,
+            last_edit: Instant::now(),
+            results: Vec::new(),
+            rendered_ticket: 0,
+            requested_ticket: 0,
+            cursor: 0,
+            scroll: 0,
+            tab: Tab::Overview,
+            tree: TreeState::default(),
+            rev: RevState::default(),
+            graph: GraphView::default(),
+            theme_idx: 0,
+            help_open: false,
+            dirty: false,
+            tick: 0,
+            size: (80, 24),
+            quit: false,
+            events: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            loader: None,
+            graph_dirty: false,
+            edge_mode: EdgeMode::default(),
+            graph_labels: true,
+        }
+    }
+
+    fn wait_for_reply(app: &mut App) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while app.rendered_ticket < app.requested_ticket {
+            app.pump_search();
+            assert!(Instant::now() < deadline, "search worker did not reply");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn edited_query_rejects_the_previous_reply() {
+        let mut app = fixture_app();
+        app.dispatch_query(String::new());
+        app.push_query('e');
+        wait_for_reply(&mut app);
+        assert!(
+            app.results.is_empty(),
+            "old browse results replaced the edited query"
+        );
+        assert!(
+            app.search_pending(),
+            "debounced query must keep polling responsive"
+        );
+        app.pending_query = None;
+        app.dispatch_query(app.query.clone());
+        wait_for_reply(&mut app);
+        assert!(!app.results.is_empty());
+        assert!(!app.search_pending());
+    }
+
+    #[test]
+    fn newest_request_controls_results_and_idle_polling() {
+        let mut app = fixture_app();
+        app.query = "emacs".into();
+        app.dispatch_query(app.query.clone());
+        app.query = "zlib".into();
+        app.dispatch_query(app.query.clone());
+        assert!(app.search_pending());
+        wait_for_reply(&mut app);
+        assert_eq!(app.selected_pkg().unwrap().name.as_ref(), "zlib");
+        assert!(!app.search_pending());
     }
 }

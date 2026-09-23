@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>guixvis — GNU Guix package explorer</title>
   <link rel="stylesheet" href="/style.css">
 </head>
@@ -14,13 +14,15 @@
       <span id="commit" class="chip" aria-live="polite"></span>
     </div>
     <div id="search-wrap">
-      <input id="search" type="text" placeholder="Search 32,500 Guix packages…"
+      <input id="search" type="text" placeholder="Search packages…"
              autocomplete="off" spellcheck="false" autocapitalize="off"
-             role="combobox" aria-expanded="false" aria-controls="results"
+             role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="results"
              aria-label="Search packages">
       <ul id="results" role="listbox" aria-label="Search results" hidden></ul>
     </div>
     <div id="controls">
+      <button id="view-btn" aria-pressed="false" aria-controls="package-browser"
+              title="Switch between the graph and package results">Packages</button>
       <button id="dir-btn" title="Graph direction: dependencies or dependents"
               aria-label="Toggle graph direction">deps ▾</button>
       <div class="depth" aria-label="Graph depth">
@@ -31,6 +33,7 @@
       <button id="copy-link" title="Copy link to this view"
               aria-label="Copy link to this view">⧉</button>
       <select id="theme-select" title="Color theme" aria-label="Color theme">
+        <option value="system">system</option>
         <option value="dark">dark</option>
         <option value="one">one</option>
         <option value="light">light</option>
@@ -49,8 +52,15 @@
       <canvas id="graph" tabindex="0"
               aria-label="Package dependency graph"></canvas>
       <div id="graph-status" role="status" aria-live="polite"></div>
-      <button id="truncated-pill" hidden></button>
+      <div id="truncated-pill" role="status" hidden></div>
       <div id="hint">click a bubble to explore · drag background to pan · scroll to zoom</div>
+      <section id="package-browser" aria-label="Package browser" hidden>
+        <div class="browse-heading">
+          <h1>Packages</h1>
+          <p id="browse-status" role="status" aria-live="polite">Search by name or description.</p>
+        </div>
+        <ul id="package-list" aria-label="Packages"></ul>
+      </section>
     </div>
     <aside id="sidebar" aria-label="Package details">
       <button id="close-detail" aria-label="Close details">✕</button>

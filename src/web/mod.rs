@@ -15,7 +15,7 @@ use axum::http::header::{
     ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
     CONTENT_TYPE, HOST, ORIGIN, REFERRER_POLICY, VARY, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
 };
-use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -127,6 +127,12 @@ impl AppState {
 
 fn pump(state: Arc<AppState>, rx: Receiver<IndexEvent>, loader: std::thread::JoinHandle<()>) {
     for ev in rx {
+        // Prepare the replacement before locking so requests can continue
+        // using the previous generation while its search data is built.
+        let engine = match &ev {
+            IndexEvent::Ready { index, .. } => Some(Arc::new(SearchEngine::new(index))),
+            _ => None,
+        };
         let mut guard = match state.inner.write() {
             Ok(g) => g,
             Err(_) => continue,
@@ -136,9 +142,8 @@ fn pump(state: Arc<AppState>, rx: Receiver<IndexEvent>, loader: std::thread::Joi
                 guard.phase = WebPhase::Loading { done, total };
             }
             IndexEvent::Ready { index, .. } => {
-                let engine = Arc::new(SearchEngine::new(&index));
                 guard.index = Some(index);
-                guard.engine = Some(engine);
+                guard.engine = engine;
                 guard.generation = guard.generation.wrapping_add(1);
                 guard.phase = WebPhase::Ready;
             }
@@ -183,12 +188,9 @@ impl IntoResponse for ApiError {
 /// Reject requests whose Host header is not local and peers that are not on
 /// loopback. Together these defeat DNS-rebinding reads of the local API.
 async fn local_only(req: Request<axum::body::Body>, next: Next) -> Result<Response, StatusCode> {
-    let host_ok = req
-        .headers()
-        .get(HOST)
-        .and_then(|h| h.to_str().ok())
-        .map(is_local_host)
-        .unwrap_or(false);
+    let host = req.headers().get(HOST).and_then(|h| h.to_str().ok());
+    let host_ok =
+        req.headers().get_all(HOST).iter().count() == 1 && host.and_then(local_authority).is_some();
     let peer_loopback = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -200,30 +202,37 @@ async fn local_only(req: Request<axum::body::Body>, next: Next) -> Result<Respon
     // A browser on another site can still reach 127.0.0.1, so refuse
     // requests it marks as cross-origin. Plain navigations send neither
     // header and keep working.
-    if let Some(origin) = req.headers().get(ORIGIN).and_then(|h| h.to_str().ok()) {
-        if !origin_is_local(origin) {
+    if let Some(origin) = req.headers().get(ORIGIN) {
+        if req.headers().get_all(ORIGIN).iter().count() != 1
+            || !origin
+                .to_str()
+                .ok()
+                .is_some_and(|origin| origin_matches_host(origin, host.unwrap_or_default()))
+        {
             return Err(StatusCode::FORBIDDEN);
         }
     }
-    if let Some(site) = req
-        .headers()
-        .get("sec-fetch-site")
-        .and_then(|h| h.to_str().ok())
-    {
-        if site.eq_ignore_ascii_case("cross-site") {
+    if let Some(site) = req.headers().get("sec-fetch-site") {
+        if req.headers().get_all("sec-fetch-site").iter().count() != 1
+            || !site
+                .to_str()
+                .ok()
+                .is_some_and(|site| matches!(site, "same-origin" | "same-site" | "none"))
+        {
             return Err(StatusCode::FORBIDDEN);
         }
     }
     Ok(next.run(req).await)
 }
 
-/// Is an `Origin` header value one of ours?
-fn origin_is_local(origin: &str) -> bool {
-    let rest = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-        .unwrap_or(origin);
-    is_local_host(rest)
+/// Only this HTTP server's exact origin may access it from a browser.
+fn origin_matches_host(origin: &str, host: &str) -> bool {
+    let Some((origin_host, origin_port)) = origin.strip_prefix("http://").and_then(local_authority)
+    else {
+        return false;
+    };
+    local_authority(host)
+        .is_some_and(|(host, port)| host.eq_ignore_ascii_case(origin_host) && port == origin_port)
 }
 
 /// Baseline hardening for every response; the API is never cached.
@@ -260,12 +269,7 @@ async fn security_headers(req: Request<axum::body::Body>, next: Next) -> Respons
 async fn compress_api(req: Request<axum::body::Body>, next: Next) -> Response {
     use std::io::Write as _;
 
-    let gzip_ok = req
-        .headers()
-        .get(ACCEPT_ENCODING)
-        .and_then(|h| h.to_str().ok())
-        .map(|v| v.split(',').any(|p| p.trim().starts_with("gzip")))
-        .unwrap_or(false);
+    let gzip_ok = accepts_gzip(req.headers());
     let api = req.uri().path().starts_with("/api/");
     let res = next.run(req).await;
     if !gzip_ok || !api {
@@ -274,7 +278,13 @@ async fn compress_api(req: Request<axum::body::Body>, next: Next) -> Response {
 
     let (mut parts, body) = res.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, 8 * 1024 * 1024).await else {
-        return Response::from_parts(parts, axum::body::Body::empty());
+        // Do not retain a successful status or the original Content-Length
+        // after collection failed. The outer layer adds security headers.
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "response exceeded the encoding limit"})),
+        )
+            .into_response();
     };
     if bytes.len() < 1024 {
         return Response::from_parts(parts, axum::body::Body::from(bytes));
@@ -296,6 +306,59 @@ async fn compress_api(req: Request<axum::body::Body>, next: Next) -> Response {
     Response::from_parts(parts, axum::body::Body::from(compressed))
 }
 
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    let mut gzip = None;
+    let mut wildcard = None;
+    for header in headers.get_all(ACCEPT_ENCODING) {
+        let Ok(header) = header.to_str() else {
+            return false;
+        };
+        for entry in header.split(',') {
+            let mut parts = entry.split(';');
+            let encoding = parts.next().unwrap_or_default().trim();
+            let slot = if encoding.eq_ignore_ascii_case("gzip")
+                || encoding.eq_ignore_ascii_case("x-gzip")
+            {
+                &mut gzip
+            } else if encoding == "*" {
+                &mut wildcard
+            } else {
+                continue;
+            };
+            let mut allowed = true;
+            let mut seen_quality = false;
+            for parameter in parts {
+                let Some((name, value)) = parameter.trim().split_once('=') else {
+                    allowed = false;
+                    break;
+                };
+                if !name.trim().eq_ignore_ascii_case("q") || seen_quality {
+                    allowed = false;
+                    break;
+                }
+                seen_quality = true;
+                allowed = positive_quality(value.trim());
+            }
+            // Repeated entries honor an explicit refusal. An explicit gzip
+            // entry always overrides the wildcard, regardless of order.
+            *slot = Some(slot.unwrap_or(true) && allowed);
+        }
+    }
+    gzip.or(wildcard).unwrap_or(false)
+}
+
+fn positive_quality(value: &str) -> bool {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if fraction.len() > 3 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    match whole {
+        "1" => fraction.bytes().all(|b| b == b'0'),
+        "0" => fraction.bytes().any(|b| b != b'0'),
+        _ => false,
+    }
+}
+
 /// Package names come from the URL; keep them to what Guix actually uses so
 /// nothing exotic reaches the index or the JSON encoder.
 fn valid_package_name(name: &str) -> bool {
@@ -306,16 +369,30 @@ fn valid_package_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.' | '_'))
 }
 
-fn is_local_host(host: &str) -> bool {
-    let host = host.trim();
-    // Strip the port: IPv6 hosts are bracketed ([::1]:8787), IPv4 and
-    // hostnames use host:port.
-    let host = if let Some(rest) = host.strip_prefix('[') {
-        rest.split(']').next().unwrap_or(rest)
+fn local_authority(value: &str) -> Option<(&str, u16)> {
+    // Parse the entire authority; accepting only a prefix would also admit
+    // malformed ports, userinfo, paths, and text after an IPv6 bracket.
+    let (host, suffix) = if value.starts_with('[') {
+        let end = value.find(']')? + 1;
+        (&value[..end], &value[end..])
+    } else if let Some(colon) = value.find(':') {
+        (&value[..colon], &value[colon..])
     } else {
-        host.split(':').next().unwrap_or(host)
+        (value, "")
     };
-    matches!(host, "localhost" | "127.0.0.1" | "::1")
+    if !host.eq_ignore_ascii_case("localhost") && !matches!(host, "127.0.0.1" | "[::1]") {
+        return None;
+    }
+    let port = if suffix.is_empty() {
+        80
+    } else {
+        let port = suffix.strip_prefix(':')?;
+        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        port.parse::<u16>().ok()?
+    };
+    Some((host, port))
 }
 
 // ---------------------------------------------------------------------------
@@ -333,9 +410,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/search", get(search))
         .route("/api/v1/package/{name}", get(package))
         .route("/api/v1/graph/{name}", get(graph))
-        .layer(middleware::from_fn(security_headers))
         .layer(middleware::from_fn(compress_api))
         .layer(middleware::from_fn(local_only))
+        .layer(middleware::from_fn(security_headers))
         // Read-only API: nothing legitimate arrives with a body.
         .layer(DefaultBodyLimit::max(8 * 1024))
         .with_state(state)
@@ -437,19 +514,23 @@ async fn search(
     let Some((index, engine, generation)) = state.snapshot() else {
         return Err(ApiError::Unavailable("index is still building".into()));
     };
-    let _permit = state
+    let permit = state
         .semaphore
         .clone()
         .acquire_owned()
         .await
         .map_err(|_| ApiError::Unavailable("shutting down".into()))?;
     let index_for_items = Arc::clone(&index);
-    let hits = tokio::task::spawn_blocking(move || engine.search(&index, &q, limit))
-        .await
-        .map_err(|_| ApiError::Unavailable("search task failed".into()))?;
-    let capped = hits.len() >= limit;
+    let hits = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        engine.search(&index, &q, limit + 1)
+    })
+    .await
+    .map_err(|_| ApiError::Unavailable("search task failed".into()))?;
+    let capped = hits.len() > limit;
     let items: Vec<serde_json::Value> = hits
         .iter()
+        .take(limit)
         .map(|h| {
             let p = &index_for_items.packages[h.hit.id as usize];
             json!({
@@ -486,13 +567,14 @@ async fn package(
     let Some((index, _, generation)) = state.snapshot() else {
         return Err(ApiError::Unavailable("index is still building".into()));
     };
-    let _permit = state
+    let permit = state
         .semaphore
         .clone()
         .acquire_owned()
         .await
         .map_err(|_| ApiError::Unavailable("shutting down".into()))?;
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, ApiError> {
+        let _permit = permit;
         let Some(id) = index.names.get(name.as_str()).copied() else {
             return Err(ApiError::NotFound);
         };
@@ -585,13 +667,14 @@ async fn graph(
     let Some((index, _, generation)) = state.snapshot() else {
         return Err(ApiError::Unavailable("index is still building".into()));
     };
-    let _permit = state
+    let permit = state
         .semaphore
         .clone()
         .acquire_owned()
         .await
         .map_err(|_| ApiError::Unavailable("shutting down".into()))?;
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, ApiError> {
+        let _permit = permit;
         let Some(root) = index.names.get(name.as_str()).copied() else {
             return Err(ApiError::NotFound);
         };

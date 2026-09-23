@@ -106,7 +106,17 @@ fn prefilter_preserves_exact_result_set() {
     let index = Arc::new(load_fixture());
     let engine = guixvis::search::SearchEngine::new(&index);
     let index_ref = &index;
-    for query in ["e", "emac", "gtk", "cyc", "pkg-config", "texinfo"] {
+    for query in [
+        "e",
+        "emac",
+        "gtk",
+        "cyc",
+        "pkg-config",
+        "texinfo",
+        "^emac",
+        "!emacs",
+        "'emac",
+    ] {
         let hits = engine.search(index_ref, query, 50);
         let ids: Vec<u32> = hits.iter().map(|h| h.hit.id).collect();
         // Brute force: score every package with nucleo, no prefilter.
@@ -128,6 +138,126 @@ fn prefilter_preserves_exact_result_set() {
         let want: std::collections::HashSet<u32> = expect.iter().copied().collect();
         assert_eq!(got, want, "query {query:?} changed the result set");
     }
+}
+
+#[test]
+fn prefilter_preserves_case_and_unicode_normalization() {
+    let doc = serde_json::from_value(serde_json::json!({
+        "header": {"schema": 3, "package_count": 3},
+        "packages": [
+            {"id": 0, "name": "EMACS"},
+            {"id": 1, "name": "café"},
+            {"id": 2, "name": "東京"}
+        ]
+    }))
+    .unwrap();
+    let index = guixvis::index::Index::from_doc(doc, 0).unwrap();
+    let engine = guixvis::search::SearchEngine::new(&index);
+    for (query, expected) in [("EMACS", "EMACS"), ("cafe", "café"), ("東京", "東京")] {
+        let hits = engine.search(&index, query, 10);
+        assert_eq!(hits.len(), 1, "query {query:?}");
+        assert_eq!(
+            index.packages[hits[0].hit.id as usize].name.as_ref(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn limited_results_keep_the_full_ranking_prefix() {
+    let index = load_fixture();
+    let engine = guixvis::search::SearchEngine::new(&index);
+    for query in ["", "e", "emacs", "!zlib", "emacs extensible"] {
+        let full = engine.search(&index, query, usize::MAX);
+        for limit in 0..=index.len() + 1 {
+            let limited = engine.search(&index, query, limit);
+            let ids: Vec<_> = limited.iter().map(|h| h.hit.id).collect();
+            let expected: Vec<_> = full.iter().take(limit).map(|h| h.hit.id).collect();
+            assert_eq!(ids, expected, "query {query:?}, limit {limit}");
+        }
+    }
+}
+
+#[test]
+fn empty_index_and_zero_limit_do_not_scan() {
+    let doc = serde_json::from_value(serde_json::json!({
+        "header": {"schema": 3, "package_count": 0}, "packages": []
+    }))
+    .unwrap();
+    let index = guixvis::index::Index::from_doc(doc, 0).unwrap();
+    let engine = guixvis::search::SearchEngine::new(&index);
+    assert!(engine.search(&index, "emacs", 10).is_empty());
+    assert!(engine.search(&index, "", 0).is_empty());
+}
+
+#[test]
+fn parallel_selection_keeps_the_full_ranking_prefix() {
+    let packages: Vec<_> = (0..3073)
+        .map(|id| {
+            serde_json::json!({
+                "id": id, "name": format!("package-{id:04}-emacs"),
+                "synopsis": if id % 2 == 0 { "text editor" } else { "mail client" }
+            })
+        })
+        .collect();
+    let doc = serde_json::from_value(serde_json::json!({
+        "header": {"schema": 3, "package_count": packages.len()}, "packages": packages
+    }))
+    .unwrap();
+    let index = guixvis::index::Index::from_doc(doc, 0).unwrap();
+    let engine = guixvis::search::SearchEngine::new(&index);
+    for query in ["emacs", "emacs editor"] {
+        let full = engine.search(&index, query, usize::MAX);
+        for limit in [1, 50, 500, 4000] {
+            let limited = engine.search(&index, query, limit);
+            assert_eq!(
+                limited.iter().map(|h| h.hit.id).collect::<Vec<_>>(),
+                full.iter()
+                    .take(limit)
+                    .map(|h| h.hit.id)
+                    .collect::<Vec<_>>(),
+                "query {query:?}, limit {limit}"
+            );
+        }
+    }
+}
+
+#[test]
+fn duplicate_names_keep_version_order_at_every_limit() {
+    let packages: Vec<_> = (0..64)
+        .map(|id| {
+            serde_json::json!({
+                "id": id, "name": "emacs", "version": id.to_string(),
+                "synopsis": "text editor"
+            })
+        })
+        .collect();
+    let doc = serde_json::from_value(serde_json::json!({
+        "header": {"schema": 3, "package_count": packages.len()}, "packages": packages
+    }))
+    .unwrap();
+    let index = guixvis::index::Index::from_doc(doc, 0).unwrap();
+    let engine = guixvis::search::SearchEngine::new(&index);
+    for limit in 1..=64 {
+        let ids: Vec<_> = engine
+            .search(&index, "emacs", limit)
+            .into_iter()
+            .map(|h| h.hit.id)
+            .collect();
+        assert_eq!(ids, (0..limit as u32).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn taking_a_reply_consumes_the_mailbox() {
+    let worker = SearchWorker::spawn(Arc::new(load_fixture()));
+    worker.send("emacs".into());
+    let reply = await_reply(&worker, 0);
+    assert_eq!(reply.query, "emacs");
+    assert!(
+        worker.take_reply(0).is_none(),
+        "delivered reply is consumed"
+    );
 }
 
 #[test]

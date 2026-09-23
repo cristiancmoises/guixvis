@@ -65,13 +65,13 @@ fn live_guix_indexer_produces_valid_index() {
 #[test]
 #[ignore = "requires a built cache (~/.cache/guixvis) and a release build"]
 fn real_index_search_latency() {
-    let cache_path = dirs::cache_dir()
-        .expect("cache dir")
-        .join("guixvis/index-v3.json.gz");
-    let file = std::fs::File::open(&cache_path).expect("run guixvis once to build the cache");
-    let doc: IndexDoc =
-        serde_json::from_reader(flate2::read::GzDecoder::new(file)).expect("parse cache");
-    let index = std::sync::Arc::new(guixvis::index::Index::from_doc(doc, 0).expect("build index"));
+    let cache = guixvis::cache::Cache::new().expect("cache directory");
+    let guixvis::cache::CacheStatus::Fresh(index) = cache.load(None, 0).expect("load snapshot")
+    else {
+        panic!("run guixvis once to build the cache");
+    };
+    let package_count = index.len();
+    let index = std::sync::Arc::new(index);
     let worker = guixvis::search::SearchWorker::spawn(index);
 
     // Warm-up query (also builds the haystacks).
@@ -90,13 +90,9 @@ fn real_index_search_latency() {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let dt = t0.elapsed();
-    let doc2: IndexDoc = serde_json::from_reader(flate2::read::GzDecoder::new(
-        std::fs::File::open(&cache_path).expect("reopen cache"),
-    ))
-    .expect("reparse");
     eprintln!(
         "search latency for 'emac' over {} real packages: {:.1} ms",
-        doc2.packages.len(),
+        package_count,
         dt.as_secs_f64() * 1000.0
     );
     assert!(

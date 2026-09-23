@@ -5,10 +5,11 @@
 
 (() => {
   const $ = (sel) => document.querySelector(sel);
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
   const api = {
-    async get(path) {
-      const res = await fetch(path, { signal: api.signal });
+    async get(path, signal) {
+      const res = await fetch(path, { signal });
       if (!res.ok) {
         let msg = `HTTP ${res.status}`;
         try {
@@ -29,9 +30,10 @@
     graphData: null,
     positions: new Map(),
     abort: null,
+    request: 0,
     loading: false,
     loaded: null, // { name, depth, dir } of the last successful load
-    reducedMotion,
+    reducedMotion: motionPreference.matches,
   };
 
   const els = {
@@ -52,6 +54,10 @@
     detail: $("#detail"),
     close: $("#close-detail"),
     themeSelect: $("#theme-select"),
+    viewBtn: $("#view-btn"),
+    browser: $("#package-browser"),
+    packageList: $("#package-list"),
+    browseStatus: $("#browse-status"),
     tooltip: (() => {
       let t = $("#tooltip");
       if (!t) {
@@ -64,6 +70,7 @@
     })(),
   };
 
+  let animationFrame = null;
   const graph = new GraphCanvas(els.canvas, {
     onPick: (name) => open(name),
     onNodeAction: (name, kind, ev) => {
@@ -72,32 +79,50 @@
     onTransform: () => { /* deselect handled internally */ },
   });
   graph.dirReverse = false;
+  graph.reducedMotion = state.reducedMotion;
+  graph.onInvalidate = requestGraphFrame;
 
   /* ---------- themes ---------- */
-  function applyTheme(name) {
-    document.documentElement.dataset.theme = name;
+  function applyTheme(name, save = true) {
+    const palette = name === "system" ? (systemTheme.matches ? "dark" : "light") : name;
+    document.documentElement.dataset.theme = palette;
+    document.documentElement.style.colorScheme = palette === "light" ? "light" : "dark";
     els.themeSelect.value = name;
     try {
-      localStorage.setItem("guixvis-theme", name);
+      if (save) localStorage.setItem("guixvis-theme", name);
     } catch (_) { /* storage unavailable */ }
     graph.refreshColors();
   }
   els.themeSelect.addEventListener("change", () => applyTheme(els.themeSelect.value));
-  let savedTheme = "dark";
+  let savedTheme = "system";
   try {
-    savedTheme = localStorage.getItem("guixvis-theme") || "dark";
+    savedTheme = localStorage.getItem("guixvis-theme") || "system";
   } catch (_) { /* storage unavailable */ }
   if (![...els.themeSelect.options].some((o) => o.value === savedTheme)) {
-    savedTheme = "dark";
+    savedTheme = "system";
   }
-  applyTheme(savedTheme);
+  applyTheme(savedTheme, false);
+  systemTheme.addEventListener("change", () => {
+    if (els.themeSelect.value === "system") applyTheme("system", false);
+  });
+  motionPreference.addEventListener("change", () => {
+    state.reducedMotion = motionPreference.matches;
+    graph.reducedMotion = state.reducedMotion;
+    if (graph.engine) {
+      graph.engine.reducedMotion = state.reducedMotion;
+      if (state.reducedMotion && !graph.engine.separated) graph.engine.settle();
+    }
+    graph.invalidate();
+  });
 
   /* ---------- hash routing ---------- */
   function parseHash() {
     const m = /^#\/p\/([^?]+)(?:\?(.*))?$/.exec(location.hash);
     if (!m) return null;
-    const params = new URLSearchParams(m[1] ? m[2] || "" : location.hash.slice(1));
-    const name = decodeURIComponent(m[1]);
+    const params = new URLSearchParams(m[2] || "");
+    let name;
+    try { name = decodeURIComponent(m[1]); }
+    catch (_) { return null; }
     const depth = Math.min(8, Math.max(1, parseInt(params.get("depth") || "2", 10) || 2));
     const dir = params.get("dir") === "reverse" ? "reverse" : "deps";
     return { name, depth, dir };
@@ -119,6 +144,7 @@
       loaded.dir === dir &&
       !state.loading
     ) {
+      showSidebar();
       return;
     }
     state.name = name;
@@ -129,17 +155,22 @@
   }
 
   /* ---------- loading ---------- */
-  async function load(name, keepPositions) {
+  async function load(name, keepPositions, retry = true) {
     if (state.abort) state.abort.abort();
     state.abort = new AbortController();
-    api.signal = state.abort.signal;
+    const signal = state.abort.signal;
+    const request = ++state.request;
+    const depth = state.depth;
+    const dir = state.dir;
+    state.name = name;
     state.loading = true;
+    state.loaded = null;
+    state.detail = null;
+    els.pill.hidden = true;
     const prevPositions = keepPositions ? state.positions : null;
     graph.setSkeleton(true);
     els.status.textContent = `Loading ${name} graph…`;
-    els.sidebar.classList.remove("open");
-    const scrim = els.wrap.querySelector(".scrim");
-    if (scrim) scrim.remove();
+    closeSidebar();
 
     const detailEl = els.detail;
     detailEl.innerHTML = "";
@@ -151,35 +182,35 @@
     }
 
     const timeout = setTimeout(() => {
-      if (state.loading) {
+      if (request === state.request && state.loading) {
         els.status.textContent = "Still loading… retry in a moment";
       }
     }, 30000);
 
     try {
       const [detail, graphData] = await Promise.all([
-        api.get(`/api/v1/package/${encodeURIComponent(name)}`),
+        api.get(`/api/v1/package/${encodeURIComponent(name)}`, signal),
         api.get(
-          `/api/v1/graph/${encodeURIComponent(name)}?dir=${state.dir}&depth=${state.depth}`
+          `/api/v1/graph/${encodeURIComponent(name)}?dir=${dir}&depth=${depth}`, signal
         ),
       ]);
       clearTimeout(timeout);
-      if (state.generation && detail.generation !== state.generation) {
-        // Index swapped mid-flight; the data is stale relative to newer
-        // responses. Re-fetch once.
-        state.generation = detail.generation;
-        return load(name, keepPositions);
+      if (signal.aborted || request !== state.request) return;
+      if (detail.generation !== graphData.generation) {
+        if (retry) return load(name, keepPositions, false);
+        throw new Error("Package index changed while loading. Select the package again.");
       }
       state.generation = detail.generation;
       state.detail = detail;
       state.graphData = graphData;
-      state.loaded = { name, depth: state.depth, dir: state.dir };
+      state.loaded = { name, depth, dir };
       renderDetail(detail, graphData);
       buildGraph(graphData, prevPositions);
       state.loading = false;
       graph.setSkeleton(false);
     } catch (err) {
       clearTimeout(timeout);
+      if (signal.aborted || request !== state.request) return;
       state.loading = false;
       if (err.name === "AbortError") return;
       els.status.textContent = `✗ ${err.message}`;
@@ -189,6 +220,7 @@
       empty.textContent = `Could not load "${name}". ${err.message}`;
       detailEl.appendChild(empty);
       graph.setGraph(null, {});
+      showSidebar();
     }
   }
 
@@ -205,19 +237,17 @@
     });
     const prev = prevPositions && prevPositions.size ? prevPositions : null;
     if (prev) engine.seedPositions(prev);
-    if (state.reducedMotion) engine.settle(600);
     graph.setGraph(engine, { root: data.root });
     graph.dirReverse = data.dir === "reverse";
-    // Remember positions for the next navigation.
-    state.positions = new Map();
-    for (const [name, p] of engine.pos) state.positions.set(name, { x: p.x, y: p.y });
+    // Keep the live positions, including simulation ticks and manual dragging.
+    state.positions = engine.pos;
 
     const n = data.nodes.length;
     const e = data.edges.length;
     els.status.textContent = `Graph of ${data.root} — ${n} nodes, ${e} edges · depth ${state.depth}`;
     if (data.truncated > 0) {
       els.pill.hidden = false;
-      els.pill.textContent = `+${data.truncated} beyond budget — raise depth`;
+      els.pill.textContent = `+${data.truncated} beyond the graph limit`;
     } else {
       els.pill.hidden = true;
     }
@@ -251,17 +281,57 @@
     if (d.homepage) {
       const meta = mk("p", "meta");
       meta.append(mk("span", null, "Home: "));
-      const a = document.createElement("a");
-      a.href = safeUrl(d.homepage);
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      a.textContent = d.homepage;
-      meta.append(a);
+      const url = safeUrl(d.homepage);
+      if (url) {
+        const a = document.createElement("a");
+        a.href = url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = d.homepage;
+        meta.append(a);
+      } else meta.append(document.createTextNode(d.homepage));
       el.append(meta);
     }
     if (d.file) {
       el.append(mk("p", "meta", `File: ${d.file}${d.line ? ":" + d.line : ""}`));
     }
+
+    const actions = mk("section", "pkg-actions");
+    actions.append(mk("h2", "sec-title", "Use this package"));
+    actions.append(mk("p", "action-help", "Copy a command to review and run in your terminal."));
+    // Guix shell uses -- to begin the command, so validate its package operand.
+    const quoted = "'" + d.name.replace(/'/g, "'\\''") + "'";
+    for (const [label, prefix] of [
+      ["Install", "guix install"], ["Remove", "guix remove"],
+      ["Show", "guix show"], ["Shell", "guix shell"],
+    ]) {
+      const command = `${prefix}${label === "Shell" ? " " : " -- "}${quoted}`;
+      const row = mk("div", "command-row");
+      const preview = mk("code", null, command);
+      const copy = mk("button", null, `Copy ${label.toLowerCase()}`);
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9+._-]*$/.test(d.name)) {
+        preview.textContent = "Package name cannot be used in a command safely.";
+        copy.disabled = true;
+      }
+      copy.setAttribute("aria-label", `Copy ${label.toLowerCase()} command for ${d.name}`);
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(command);
+          copy.textContent = "Copied";
+        } catch (_) {
+          copy.textContent = "Select to copy";
+          const range = document.createRange();
+          range.selectNodeContents(preview);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        setTimeout(() => { copy.textContent = `Copy ${label.toLowerCase()}`; }, 1800);
+      });
+      row.append(preview, copy);
+      actions.append(row);
+    }
+    el.append(actions);
 
     const counts = mk("div", "counts");
     const countBox = (label, value) => {
@@ -311,8 +381,19 @@
       el.append(mk("p", "empty", "No related packages found."));
     }
 
+    showSidebar();
+    markCurrentPackage();
+  }
+
+  function showSidebar() {
     els.sidebar.classList.add("open");
+    els.sidebar.inert = false;
     if (window.innerWidth <= 1100) {
+      const focusWasInView = els.wrap.contains(document.activeElement);
+      els.browser.inert = true;
+      els.canvas.inert = true;
+      if (focusWasInView) els.close.focus();
+      if (els.wrap.querySelector(".scrim")) return;
       const scrim = document.createElement("div");
       scrim.className = "scrim";
       scrim.addEventListener("click", closeSidebar);
@@ -358,42 +439,126 @@
       const u = new URL(url);
       if (u.protocol === "http:" || u.protocol === "https:") return url;
     } catch (_) { /* relative or malformed */ }
-    return "#";
+    return null;
   }
 
   function closeSidebar() {
     els.sidebar.classList.remove("open");
+    els.sidebar.inert = window.innerWidth <= 1100;
+    els.browser.inert = false;
+    els.canvas.inert = false;
     const scrim = els.wrap.querySelector(".scrim");
     if (scrim) scrim.remove();
+    if (els.sidebar.inert && els.sidebar.contains(document.activeElement)) els.viewBtn.focus();
   }
 
   /* ---------- search ---------- */
   let searchTimer = null;
   let searchIndex = 0;
   let searchItems = [];
+  let searchAbort = null;
+  let searchRequest = 0;
+  let searchedQuery = null;
+
+  function hideResults() {
+    els.results.hidden = true;
+    els.search.setAttribute("aria-expanded", "false");
+    els.search.removeAttribute("aria-activedescendant");
+  }
+
+  function choosePackage(name) {
+    hideResults();
+    els.tooltip.hidden = true;
+    open(name);
+  }
+
+  function markCurrentPackage() {
+    for (const button of els.packageList.querySelectorAll("button")) {
+      if (button.dataset.package === state.name) button.setAttribute("aria-current", "true");
+      else button.removeAttribute("aria-current");
+    }
+  }
+
+  function renderPackageList(data, q) {
+    els.packageList.replaceChildren();
+    const count = data.items.length;
+    els.browseStatus.textContent = count
+      ? `${count}${data.capped ? "+" : ""} packages${q ? ` matching “${q}”` : ""}.${data.capped ? " Refine your search to see more." : ""}`
+      : `No packages match “${q}”. Try another name or description.`;
+    for (const item of data.items) {
+      const li = document.createElement("li");
+      const button = document.createElement("button");
+      button.dataset.package = item.name;
+      const heading = document.createElement("span");
+      heading.className = "package-title";
+      const name = spanWithMarks(item.name, item.name_spans);
+      name.className = "r-name";
+      const version = document.createElement("span");
+      version.className = "r-ver";
+      version.textContent = item.version || "";
+      heading.append(name, version);
+      const synopsis = spanWithMarks(item.synopsis || "No description available.", item.synopsis_spans);
+      synopsis.className = "package-synopsis";
+      const meta = document.createElement("span");
+      meta.className = "package-meta";
+      meta.textContent = `${item.deps ?? 0} dependencies · ${item.dependents ?? 0} dependents${item.license ? ` · ${item.license}` : ""}`;
+      button.append(heading, synopsis, meta);
+      button.addEventListener("click", () => choosePackage(item.name));
+      li.append(button);
+      els.packageList.append(li);
+    }
+    markCurrentPackage();
+  }
+
+  els.viewBtn.addEventListener("click", () => {
+    const show = els.browser.hidden;
+    els.browser.hidden = !show;
+    els.wrap.classList.toggle("show-packages", show);
+    els.viewBtn.setAttribute("aria-pressed", String(show));
+    els.viewBtn.textContent = show ? "Graph" : "Packages";
+    els.viewBtn.title = show ? "Show dependency graph" : "Show package results";
+    hideResults();
+    closeSidebar();
+    if (show && searchedQuery === null) runSearch(els.search.value.trim(), false);
+    if (!show) requestGraphFrame();
+  });
 
   els.search.addEventListener("input", () => {
     clearTimeout(searchTimer);
+    if (searchAbort) searchAbort.abort();
+    searchRequest += 1;
+    searchItems = [];
+    hideResults();
     const q = els.search.value.trim();
-    if (!q) {
-      els.results.hidden = true;
+    if (!q && els.browser.hidden) {
+      searchedQuery = null;
       return;
     }
-    searchTimer = setTimeout(() => runSearch(q), 150);
+    els.browseStatus.textContent = "Searching packages…";
+    searchTimer = setTimeout(() => runSearch(q, !!q), 150);
   });
 
-  async function runSearch(q) {
-    if (state.abort) state.abort.abort();
-    state.abort = new AbortController();
-    api.signal = state.abort.signal;
+  async function runSearch(q, showSuggestions = true) {
+    if (searchAbort) searchAbort.abort();
+    searchAbort = new AbortController();
+    const signal = searchAbort.signal;
+    const request = ++searchRequest;
+    els.browseStatus.textContent = "Searching packages…";
     try {
-      const data = await api.get(`/api/v1/search?q=${encodeURIComponent(q)}&limit=20`);
-      searchItems = data.items;
+      const data = await api.get(`/api/v1/search?q=${encodeURIComponent(q)}&limit=100`, signal);
+      if (signal.aborted || request !== searchRequest) return;
+      searchedQuery = q;
+      searchItems = data.items.slice(0, 20);
       searchIndex = 0;
-      renderResults();
+      renderPackageList(data, q);
+      if (showSuggestions && els.browser.hidden && document.activeElement === els.search) renderResults();
     } catch (err) {
-      if (err.name === "AbortError") return;
+      if (signal.aborted || request !== searchRequest || err.name === "AbortError") return;
+      els.browseStatus.textContent = `Could not search packages. ${err.message}`;
+      els.packageList.replaceChildren();
+      if (!showSuggestions || !els.browser.hidden) return;
       els.results.hidden = false;
+      els.search.setAttribute("aria-expanded", "true");
       els.results.innerHTML = "";
       const li = document.createElement("li");
       li.textContent = `✗ ${err.message}`;
@@ -410,6 +575,7 @@
     } else {
       searchItems.forEach((item, i) => {
         const li = document.createElement("li");
+        li.id = `result-${i}`;
         li.setAttribute("role", "option");
         li.setAttribute("aria-selected", String(i === searchIndex));
         const name = spanWithMarks(item.name, item.name_spans);
@@ -440,14 +606,17 @@
         }
         li.addEventListener("mousedown", (ev) => {
           ev.preventDefault();
-          open(item.name);
-          els.search.value = "";
-          els.results.hidden = true;
+          choosePackage(item.name);
         });
         els.results.appendChild(li);
       });
     }
     els.results.hidden = false;
+    els.search.setAttribute("aria-expanded", "true");
+    if (searchItems.length) {
+      els.search.setAttribute("aria-activedescendant", `result-${searchIndex}`);
+      els.results.children[searchIndex]?.scrollIntoView({ block: "nearest" });
+    } else els.search.removeAttribute("aria-activedescendant");
   }
 
   function spanWithMarks(text, spans) {
@@ -482,25 +651,23 @@
       renderResults();
     } else if (ev.key === "Enter" && !els.results.hidden && searchItems[searchIndex]) {
       ev.preventDefault();
-      open(searchItems[searchIndex].name);
-      els.search.value = "";
-      els.results.hidden = true;
+      choosePackage(searchItems[searchIndex].name);
     } else if (ev.key === "Escape") {
-      els.results.hidden = true;
+      hideResults();
     }
+  });
+
+  els.search.addEventListener("focus", () => {
+    if (searchItems.length && els.search.value.trim() === searchedQuery && els.browser.hidden) renderResults();
   });
 
   document.addEventListener("click", (ev) => {
     if (!els.search.contains(ev.target) && !els.results.contains(ev.target)) {
-      els.results.hidden = true;
+      hideResults();
     }
   });
 
   /* ---------- controls ---------- */
-  function depthValue() {
-    return parseInt(els.depthVal.textContent, 10) || 2;
-  }
-
   els.depthPlus.addEventListener("click", () => {
     if (state.depth < 8) {
       state.depth += 1;
@@ -534,7 +701,7 @@
   els.close.addEventListener("click", closeSidebar);
 
   /* ---------- history ---------- */
-  window.addEventListener("popstate", () => {
+  function followHash() {
     const parsed = parseHash();
     if (!parsed) return;
     if (parsed.name !== state.name || parsed.depth !== state.depth || parsed.dir !== state.dir) {
@@ -545,11 +712,13 @@
       els.dirBtn.classList.toggle("active", state.dir === "reverse");
       load(parsed.name, true);
     }
-  });
+  }
+  window.addEventListener("popstate", followHash);
+  window.addEventListener("hashchange", followHash);
 
   /* ---------- keyboard shortcuts ---------- */
   document.addEventListener("keydown", (ev) => {
-    if (ev.target === els.search) return;
+    if (ev.target.matches("input, select, textarea, [contenteditable]")) return;
     if (ev.key === "/") {
       ev.preventDefault();
       els.search.focus();
@@ -576,9 +745,11 @@
   });
 
   /* ---------- tooltip ---------- */
+  let tooltipTimer = null;
   function showTooltip(name, x, y, persist) {
     const node = graph.engine && graph.engine.node(name);
     if (!node) return;
+    clearTimeout(tooltipTimer);
     els.tooltip.innerHTML = "";
     const b = document.createElement("b");
     b.textContent = name;
@@ -592,7 +763,7 @@
     els.tooltip.style.left = `${Math.min(x + 14, window.innerWidth - rect.width - 10)}px`;
     els.tooltip.style.top = `${Math.min(y + 14, window.innerHeight - rect.height - 10)}px`;
     if (!persist) {
-      setTimeout(() => {
+      tooltipTimer = setTimeout(() => {
         els.tooltip.hidden = true;
       }, 1400);
     }
@@ -602,11 +773,16 @@
     if (!graph.engine || !graph.hovered) return;
     showTooltip(graph.hovered, ev.clientX, ev.clientY, false);
   });
+  els.canvas.addEventListener("pointerleave", () => {
+    clearTimeout(tooltipTimer);
+    els.tooltip.hidden = true;
+  });
 
   /* ---------- boot ---------- */
   async function boot() {
     const health = await api.get("/api/v1/health");
     if (health.packages > 0) {
+      els.search.placeholder = `Search ${health.packages.toLocaleString()} packages…`;
       els.commit.textContent = `${health.packages.toLocaleString()} pkgs`;
       if (health.guix_commit) {
         els.commit.textContent += ` · ${health.guix_commit.slice(0, 7)}`;
@@ -643,15 +819,26 @@
   function resize() {
     const rect = els.wrap.getBoundingClientRect();
     graph.resize(rect.width, rect.height, window.devicePixelRatio || 1);
+    const mobile = window.innerWidth <= 1100;
+    const opened = els.sidebar.classList.contains("open");
+    els.sidebar.inert = mobile && !opened;
+    els.browser.inert = mobile && opened;
+    els.canvas.inert = mobile && opened;
+    if (!mobile) els.wrap.querySelector(".scrim")?.remove();
   }
   window.addEventListener("resize", resize);
+  new ResizeObserver(resize).observe(els.wrap);
   resize();
 
-  function loop() {
-    graph.frame();
-    requestAnimationFrame(loop);
+  function requestGraphFrame() {
+    if (animationFrame !== null || document.hidden || !els.browser.hidden) return;
+    animationFrame = requestAnimationFrame(() => {
+      animationFrame = null;
+      if (!document.hidden && els.browser.hidden && graph.frame()) requestGraphFrame();
+    });
   }
-  requestAnimationFrame(loop);
+  document.addEventListener("visibilitychange", requestGraphFrame);
+  requestGraphFrame();
 
   boot().catch((err) => {
     els.status.textContent = `✗ cannot reach API: ${err.message}`;

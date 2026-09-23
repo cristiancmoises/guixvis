@@ -89,6 +89,15 @@ async fn search_bounds() {
 
     let res = app
         .clone()
+        .oneshot(get("/api/v1/search?limit=10"))
+        .await
+        .expect("call");
+    let body = json_of(res).await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 10);
+    assert_eq!(body["capped"], false, "an exact fit is not truncated");
+
+    let res = app
+        .clone()
         .oneshot(get("/api/v1/search?q=emac&limit=600"))
         .await
         .expect("call");
@@ -302,6 +311,79 @@ async fn cross_site_requests_are_refused() {
 }
 
 #[tokio::test]
+async fn malformed_and_other_local_origins_are_refused() {
+    let app = router(state());
+    for origin in [
+        "127.0.0.1:8787",
+        "http://127.0.0.1:9000",
+        "https://127.0.0.1:8787",
+        "http://localhost:8787",
+        "http://127.0.0.1:8787/",
+        "http://127.0.0.1:8787@evil.example",
+        "http://[::1]junk",
+        "null",
+    ] {
+        let mut req = get("/api/v1/health");
+        req.headers_mut().insert("origin", origin.parse().unwrap());
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "origin {origin:?}");
+        assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+    }
+    let mut req = get("/api/v1/health");
+    req.headers_mut().insert(
+        "origin",
+        axum::http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+    );
+    assert_eq!(
+        app.oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn host_authority_must_be_complete_and_unambiguous() {
+    let app = router(state());
+    for host in [
+        "127.0.0.1:",
+        "127.0.0.1:bad",
+        "127.0.0.1:65536",
+        "127.0.0.1:80@evil.example",
+        "[::1]junk",
+        "[::1",
+        "[::1]:80/path",
+    ] {
+        let mut req = get("/api/v1/health");
+        req.headers_mut().insert("host", host.parse().unwrap());
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "host {host:?}");
+    }
+    for host in ["localhost:8787", "LOCALHOST", "[::1]:8787", "127.0.0.1"] {
+        let mut req = get("/api/v1/health");
+        req.headers_mut().insert("host", host.parse().unwrap());
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::OK,
+            "{host}"
+        );
+    }
+    for header in ["host", "origin", "sec-fetch-site"] {
+        let mut req = get("/api/v1/health");
+        let value = match header {
+            "host" => "127.0.0.1:8787",
+            "origin" => "http://127.0.0.1:8787",
+            _ => "same-origin",
+        };
+        req.headers_mut().insert(header, value.parse().unwrap());
+        req.headers_mut().append(header, value.parse().unwrap());
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::FORBIDDEN,
+            "duplicate {header}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn exotic_package_names_are_rejected() {
     for name in ["has%20space", "dot.dot", "a".repeat(200).as_str()] {
         let res = router(state())
@@ -340,4 +422,75 @@ async fn static_assets_carry_the_policy_too() {
             "{path}"
         );
     }
+}
+
+#[tokio::test]
+async fn compression_respects_encoding_tokens_and_quality() {
+    let mut index = load_fixture();
+    index.packages[0].description = std::sync::Arc::from("x".repeat(2048));
+    let app = router(AppState::with_index(index));
+    for (encoding, compressed) in [
+        ("gzip", true),
+        ("GZIP;Q=1.000", true),
+        ("gzip;q=0.001", true),
+        ("br, *;q=0.5", true),
+        ("gzip;q=0", false),
+        ("gzip;q=0.000", false),
+        ("gzipgarbage", false),
+        ("gzip;q=invalid", false),
+        ("gzip;q=1.1", false),
+        ("gzip;q=0.0001", false),
+        ("gzip;q=1;q=0", false),
+        ("gzip;q=0, *;q=1", false),
+        ("*;q=1, gzip;q=0", false),
+        ("*;q=0", false),
+    ] {
+        let mut req = get("/api/v1/package/emacs");
+        req.headers_mut()
+            .insert("accept-encoding", encoding.parse().unwrap());
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().contains_key("content-encoding"),
+            compressed,
+            "{encoding}"
+        );
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let json = if compressed {
+            let mut decoder = flate2::read::GzDecoder::new(body.as_ref());
+            let mut plain = String::new();
+            std::io::Read::read_to_string(&mut decoder, &mut plain).unwrap();
+            serde_json::from_str::<serde_json::Value>(&plain).unwrap()
+        } else {
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+        };
+        assert_eq!(json["description"].as_str().unwrap().len(), 2048);
+    }
+}
+
+#[tokio::test]
+async fn oversized_compression_response_is_an_explicit_error() {
+    let mut index = load_fixture();
+    index.packages[0].description = std::sync::Arc::from("x".repeat(8 * 1024 * 1024));
+    let mut req = get("/api/v1/package/emacs");
+    req.headers_mut()
+        .insert("accept-encoding", "gzip".parse().unwrap());
+    let res = router(AppState::with_index(index))
+        .oneshot(req)
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(res.headers()["cache-control"], "no-store");
+    assert!(!res.headers().contains_key("content-encoding"));
+    let content_length = res
+        .headers()
+        .get("content-length")
+        .map(|h| h.to_str().unwrap().parse::<usize>().unwrap());
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    if let Some(length) = content_length {
+        assert_eq!(length, body.len());
+    }
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["error"].is_string());
 }

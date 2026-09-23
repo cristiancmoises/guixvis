@@ -6,6 +6,14 @@ pacvis do Arch: pesquise **qualquer** pacote, veja tudo que está
 **relacionado** a ele, com busca fuzzy rápida e uma interface polida,
 100% pelo teclado.
 
+[English](README.md) · [Guia de uso](docs/usage.md) ·
+[Mudanças na versão 0.6.0](docs/releases/0.6.0.md) · [Segurança](SECURITY.md)
+
+A versão 0.6.0 traz uma lista de pacotes no navegador, comandos Guix para
+copiar, busca e detalhes nativos no Emacs e temas persistentes no terminal.
+Também corrige casos de busca, respostas atrasadas e a criação de arquivos
+temporários do cache.
+
 ```
 ┌─ Busca: emac▌────────────────────────────────────────────────┐
 │  [Visão geral(1)] [Dependências(2)] [Deps reversas(3)] [Grafo(4)] │
@@ -32,8 +40,8 @@ mudar o que não te agradar.
 ## Recursos
 
 - **Pesquise qualquer coisa** — busca fuzzy em todos os pacotes
-  (nome + sinopse), com destaques e ~4 ms por tecla sobre o conjunto
-  completo de 32.500 pacotes.
+  (nome + sinopse), com destaques, termos combinados e prioridade para
+  correspondências no nome do pacote.
 - **Detalhes do pacote** — versão, descrição, licenças, homepage e a
   localização do código-fonte (`gnu/packages/emacs.scm:591`).
 - **Dependências** — árvore expansível de inputs (`P` propagado, `N` nativo),
@@ -43,10 +51,13 @@ mudar o que não te agradar.
 - **Grafo de dependências** — layout dirigido por forças (Fruchterman–
   Reingold determinístico), siga nós com Enter, profundidade com `+/−`.
 - **Inicialização instantânea depois da primeira vez** — o índice fica em
-  cache (JSON gzip) e é reconstruído automaticamente quando o commit do seu
+  cache binário e é reconstruído automaticamente quando o commit do seu
   canal Guix muda.
 - **Zero configuração** — funciona em qualquer sistema GNU Guix; a primeira
   execução constrói o índice em segundo plano com progresso ao vivo.
+- **Comandos do pacote** — veja e copie comandos de instalação, remoção,
+  consulta e `guix shell` no navegador ou no Emacs. Você decide quando
+  executá-los; navegar pelos pacotes não altera seu perfil.
 
 ## Vídeo de demonstração
 
@@ -75,6 +86,12 @@ um pacote — clique em uma para abrir a visão dela. Links diretos
 (`#/p/emacs?depth=2&dir=reverse`) são compartilháveis e funcionam com o
 botão voltar do navegador; o layout é responsivo até em telas de celular.
 
+Clique em **Packages** para manter os resultados na tela, com versão,
+sinopse, licença e contagens de dependências. A lista mostra até 100
+resultados ordenados; refine a busca quando atingir esse limite. O botão
+**Graph** volta ao grafo. Nos detalhes, os comandos Guix ficam disponíveis
+para revisão e cópia.
+
 Os nomes acima das bolhas são posicionados com caixas medidas e um halo na cor
 do fundo: rótulos que colidiriam simplesmente não são desenhados (o tooltip ao
 passar o mouse continua nomeando cada bolha), então o grafo fica legível em vez
@@ -92,39 +109,50 @@ de virar uma pilha de textos sobrepostos.
 
 ## Temas
 
-As duas interfaces trazem nove temas de cores: **dark** (padrão), **one**,
+As duas interfaces trazem nove temas de cores: **dark** (padrão da TUI), **one**,
 **light**, **dracula**, **nord**, **gruvbox-dark**, **tokyo-night**,
 **catppuccin-mocha** e **tron** — este último é preto puro com bolhas neon, que
 é o que você quer num painel OLED de madrugada.
 
 - TUI: pressione `T` para alternar (o tema ativo aparece na barra de
-  status); `NO_COLOR` é respeitado com um tema em tons de cinza.
+  status). A escolha fica em `$XDG_CONFIG_HOME/guixvis/theme`, normalmente
+  `~/.config/guixvis/theme`. Use `guixvis --theme nord` para mudar só nesta
+  execução. `NO_COLOR` é respeitado com um tema em tons de cinza.
 - Interface web: escolha o tema no seletor do topo; a escolha fica salva
-  entre as sessões.
+  entre as sessões. **System**, o padrão para novos usuários, acompanha o
+  modo claro/escuro do sistema. A preferência por movimento reduzido também
+  é respeitada, e o grafo para de redesenhar quando estabiliza.
 
 A TUI no tema dracula:
 
 ![guixvis TUI — tema dracula](assets/guixvis-tui-dracula.png)
 
-A interface web no tema nord:
+A lista de pacotes e os comandos da versão 0.6.0, no tema nord:
+
+![Guixvis 0.6.0 — lista de pacotes e comandos para copiar](assets/guixvis-packages-0.6.png)
+
+O grafo no tema nord:
 
 ![guixvis web — tema nord](assets/guixvis-web-nord.png)
 
 ## Requisitos
 
 - GNU Guix (`guix` no `PATH`, ou defina `GUIX` apontando para o seu perfil).
-- Rust 1.85+ (edition 2021) para compilar a partir do código-fonte.
+- Rust 1.88+ (edition 2021) para compilar a partir do código-fonte.
 
 ## Instalação
 
 ```sh
 git clone https://codeberg.org/berkeley/guixvis guixvis
 cd guixvis
-cargo install --path .            # instala em ~/.cargo/bin
+cargo install --locked --features web --path .  # instala em ~/.cargo/bin
 # ou, para deixar direto no seu PATH:
-cargo install --root ~/.local --path .
+cargo install --locked --features web --root ~/.local --path .
 guixvis
 ```
+
+Sem `--features web`, a instalação inclui apenas a interface de terminal.
+O navegador e o cliente nativo do Emacs precisam desse recurso.
 
 Espelhos: `github.com/cristiancmoises/guixvis`,
 `git.securityops.co/cristiancmoises/guixvis`,
@@ -174,16 +202,22 @@ ferramentas extras.
 
 ### Emacs
 
-Tem um arquivo pequeno em `elisp/` para quem vive no Emacs. Aponte o
-`load-path` para ele e você ganha `M-x guixvis` (roda a TUI num buffer
-`term`) e `M-x guixvis-web`. Se você também usa o emacs-guix, uma chamada
-coloca os dois no popup `guix`:
+Carregue `elisp/guixvis.el` e inicie `guixvis web` em um terminal. Com
+`M-x guixvis-search`, você pesquisa numa tabela nativa do Emacs sem bloquear
+o editor. `M-x guixvis-package` abre um pacote pelo nome. Use `RET` para os
+detalhes, `g` para atualizar, `s` para buscar, `w` para copiar um comando e
+`b` para abrir o navegador. Os comandos de pacote nunca rodam automaticamente.
 
 ```elisp
 (add-to-list 'load-path "/caminho/para/guixvis/elisp")
 (require 'guixvis)
-(guixvis-popup-install)
+;; Opcional, se você usa Emacs-Guix:
+;; (guixvis-popup-install)
 ```
+
+`M-x guixvis` continua abrindo a TUI num buffer `term`, agora reutilizando
+o processo quando ele já está rodando. Configure `guixvis-web-url` se usar
+outra porta local. O [guia de uso](docs/usage.md#emacs) detalha as opções.
 
 O arquivo fica aqui, e não no emacs-guix, para que as entradas do menu só
 apareçam para quem realmente tem o programa instalado (veja
@@ -194,6 +228,8 @@ apareçam para quem realmente tem o programa instalado (veja
 ```
 guixvis              inicia o explorador (constrói o índice na 1ª execução)
 guixvis --rebuild    força a reconstrução do índice
+guixvis --theme nord  escolhe um tema de terminal para esta execução
+guixvis web          inicia o site local e a API para o Emacs
 guixvis --help       todas as opções
 ```
 
@@ -287,8 +323,14 @@ refocaliza a raiz, `e` alterna as arestas, `l` alterna os rótulos, `1`–`4` (o
 
 ## Desempenho
 
-Partida, busca e layout são medidos, não estimados. `cargo run --release
---example bench` imprime os mesmos números na sua máquina:
+Use `cargo run --release --example bench` para medir cache, busca e layout
+na sua máquina. `node examples/bench-web.cjs` mede separadamente o código de
+layout do grafo do navegador.
+
+Esta tabela registra medições de versões anteriores, com 32.500 pacotes.
+Os tempos variam conforme a máquina, os canais e o estado do cache; não são
+garantias de latência. As [notas da versão 0.6.0](docs/releases/0.6.0.md)
+descrevem as mudanças e a validação desta versão.
 
 | Etapa | Tempo | Observação |
 |---|---|---|
@@ -320,28 +362,33 @@ web é deliberadamente chata quanto a alcance:
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Resource-Policy` e `Cache-Control: no-store` na API;
 - valida os nomes de pacote vindos da URL, limita a busca a 200 caracteres, a
-  profundidade a 1–8 e o grafo a 200 nós, com concorrência máxima de quatro;
+  profundidade a 1–8 e o grafo a 200 nós relacionados mais a raiz, com
+  concorrência máxima de quatro;
 - grava o script Guile embutido num diretório privado `0700` como arquivo `0600`
   (o diretório temporário do sistema é gravável por todos) e recusa arquivos de
   cache absurdamente grandes antes de lê-los;
 - limita o corpo das requisições a 8 KB: uma API somente leitura não tem o que
   fazer com um corpo.
 
-Não há autenticação porque não há o que autenticar: a API é somente leitura,
-apenas em loopback, e não altera nada.
+A API não tem login e foi feita para uso local. Os comandos aparecem como
+texto para você revisar e copiar; o servidor não instala nem remove pacotes.
+Não exponha o serviço por um proxy público. Veja [SECURITY.md](SECURITY.md)
+para os limites dessa proteção.
 
 ## Desenvolvimento
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test                                   # testes unitários e de fixture
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-features            # testes unitários, fixtures e web
+node --test tests/web_graph_tests.cjs
+emacs -Q --batch -L elisp -l elisp/guixvis-tests.el -f ert-run-tests-batch-and-exit
 cargo test --test live_guix_tests -- --ignored   # testes reais contra o Guix
 ```
 
 Estrutura: `src/index.rs` (índice em memória + BFS), `src/search.rs` (busca
 fuzzy com nucleo), `src/indexer.rs` (subprocesso `guix repl`),
-`src/cache.rs` (cache gzip), `src/graph.rs` (extração do grafo + layout),
+`src/cache.rs` (snapshot binário), `src/graph.rs` (extração do grafo + layout),
 `src/app.rs` (estado + teclas), `src/ui/*` (renderização),
 `data/guix-index.scm` (indexador Guile).
 

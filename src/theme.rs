@@ -1,6 +1,8 @@
-//! Hand-rolled theming: eight palettes plus a NO_COLOR grayscale fallback.
-//! Cycle with `T` (forward) and `Shift+T` (backward); the active theme name
-//! is shown in the status bar.
+//! Nine palettes, a remembered terminal preference, and a NO_COLOR fallback.
+//! Cycle with `T`; the active theme name is shown in the status bar.
+
+use std::io::{Read, Write};
+use std::path::Path;
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -34,6 +36,77 @@ pub const THEMES: [Theme; 9] = [
     CATPPUCCIN,
     TRON,
 ];
+
+/// Stable names used by the CLI and preference file, independent of labels.
+pub const THEME_IDS: [&str; 9] = [
+    "dark",
+    "one",
+    "light",
+    "dracula",
+    "nord",
+    "gruvbox-dark",
+    "tokyo-night",
+    "catppuccin-mocha",
+    "tron",
+];
+
+pub fn theme_index(name: &str) -> Option<usize> {
+    THEME_IDS.iter().position(|candidate| *candidate == name)
+}
+
+/// Missing or invalid preferences fall back to the default palette.
+pub fn saved_theme() -> usize {
+    dirs::config_dir()
+        .and_then(|dir| read_preference(&dir.join("guixvis/theme")))
+        .unwrap_or(0)
+}
+
+fn read_preference(path: &Path) -> Option<usize> {
+    let mut value = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(128)
+        .read_to_string(&mut value)
+        .ok()?;
+    theme_index(value.trim())
+}
+
+/// Persist explicit changes. Failure leaves the in-memory choice usable.
+pub fn save_theme(index: usize) -> std::io::Result<()> {
+    let dir = dirs::config_dir().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no configuration directory")
+    })?;
+    write_preference(&dir.join("guixvis"), index)
+}
+
+fn write_preference(dir: &Path, index: usize) -> std::io::Result<()> {
+    let name = THEME_IDS
+        .get(index)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "unknown theme"))?;
+    std::fs::create_dir_all(dir)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp = dir.join(format!(".theme-{}-{stamp}", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temp)?;
+    let result = (|| {
+        writeln!(file, "{name}")?;
+        file.sync_all()?;
+        std::fs::rename(&temp, dir.join("theme"))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp);
+    }
+    result
+}
 
 const DARK: Theme = Theme {
     name: "dark (default)",
@@ -300,5 +373,40 @@ pub fn theme_names() -> Vec<&'static str> {
         vec![GRAY.name]
     } else {
         THEMES.iter().map(|t| t.name).collect()
+    }
+}
+
+#[cfg(test)]
+mod preference_tests {
+    use super::*;
+
+    #[test]
+    fn stable_names_match_all_palettes() {
+        assert_eq!(THEME_IDS.len(), THEMES.len());
+        for (index, name) in THEME_IDS.iter().enumerate() {
+            assert_eq!(theme_index(name), Some(index));
+            assert!(THEMES[index].name.starts_with(name));
+        }
+        assert_eq!(theme_index("unknown"), None);
+    }
+
+    #[test]
+    fn preferences_round_trip_and_reject_invalid_values() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("guixvis-theme-{}-{stamp}", std::process::id()));
+        assert_eq!(read_preference(&dir.join("theme")), None);
+        write_preference(&dir, 4).unwrap();
+        assert_eq!(read_preference(&dir.join("theme")), Some(4));
+        write_preference(&dir, 8).unwrap();
+        assert_eq!(read_preference(&dir.join("theme")), Some(8));
+        assert!(write_preference(&dir, usize::MAX).is_err());
+        assert_eq!(read_preference(&dir.join("theme")), Some(8));
+        std::fs::write(dir.join("theme"), "unknown\n").unwrap();
+        assert_eq!(read_preference(&dir.join("theme")), None);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

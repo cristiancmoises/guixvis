@@ -108,11 +108,11 @@ impl SearchWorker {
 
     /// Take the freshest reply if its ticket is newer than `last`.
     pub fn take_reply(&self, last: u64) -> Option<SearchReply> {
-        let reply = self.reply.lock().ok()?;
+        let mut reply = self.reply.lock().ok()?;
         if reply.as_ref().map(|r| r.ticket) <= Some(last) {
             return None;
         }
-        reply.clone()
+        reply.take()
     }
 }
 
@@ -137,6 +137,9 @@ struct Haystacks {
     lower: Vec<String>,
     /// Lowercased names, for the substring boost.
     lower_names: Vec<String>,
+    /// Byte filtering is only sound for ASCII haystacks: nucleo can match
+    /// an ASCII query against accented Unicode characters.
+    ascii: Vec<bool>,
     /// Global byte frequencies over the folded haystacks: the prefilter
     /// checks only the rarest byte of each term, which skips the most
     /// candidates for a single memchr per candidate.
@@ -153,6 +156,7 @@ fn build_haystacks(index: &Index) -> Haystacks {
     let mut name_len = Vec::with_capacity(index.len());
     let mut lower = Vec::with_capacity(index.len());
     let mut lower_names = Vec::with_capacity(index.len());
+    let mut ascii = Vec::with_capacity(index.len());
     for p in &index.packages {
         let name_len_c = p.name.chars().count();
         let name = Utf32String::from(p.name.as_ref());
@@ -165,6 +169,7 @@ fn build_haystacks(index: &Index) -> Haystacks {
         name_len.push(name_len_c as u32);
         names.push(name);
         lower_names.push(p.name.to_lowercase());
+        ascii.push(hay.is_ascii());
         lower.push(hay.to_lowercase());
         combined.push(Utf32String::from(hay));
     }
@@ -189,6 +194,7 @@ fn build_haystacks(index: &Index) -> Haystacks {
         name_len,
         lower,
         lower_names,
+        ascii,
         byte_freq: freq,
         by_hub,
     }
@@ -226,6 +232,9 @@ fn worker_loop(
 }
 
 fn scan(index: &Index, hay: &Haystacks, query: &str, limit: usize) -> Vec<HighlightedHit> {
+    if limit == 0 || index.is_empty() {
+        return Vec::new();
+    }
     // Empty query: browse the hubs (highest fan-in first), not the alphabet.
     if query.trim().is_empty() {
         return hay
@@ -254,98 +263,106 @@ fn scan(index: &Index, hay: &Haystacks, query: &str, limit: usize) -> Vec<Highli
         .collect();
     let query_folded = query.to_lowercase();
 
-    // Prefilter: a fuzzy match needs every byte of every (ASCII) term in the
-    // haystack, so checking just the rarest byte of each term rejects the
-    // most candidates for one memchr each. Non-ASCII terms take the safe
-    // path, because Smart normalization can rewrite their bytes.
+    // Only positive, parsed ASCII needles contribute required bytes.
+    // Looking at the raw query would mistake pattern operators for literal
+    // characters, and negative terms do not require their bytes to appear.
+    // Unicode needles/haystacks bypass this filter because normalization
+    // and case folding can rewrite characters.
     // The check only pays for itself when the rare byte actually rejects:
     // a byte present in almost every haystack costs a memchr and filters
     // nothing, so those terms skip the prefilter altogether.
-    let total = index.len() as u32;
-    let rarest: Vec<Option<u8>> = terms
+    let total = index.len() as u64;
+    let rarest: Vec<u8> = patterns
         .iter()
-        .map(|t| {
-            let best = t
-                .as_bytes()
-                .iter()
-                .filter(|b| b.is_ascii())
-                .copied()
+        .flat_map(|pattern| &pattern.atoms)
+        .filter(|atom| !atom.negative)
+        .filter_map(|atom| {
+            let needle = atom.needle_text();
+            if !needle.is_ascii() {
+                return None;
+            }
+            let best = needle
+                .chars()
+                .map(|c| (c as u8).to_ascii_lowercase())
                 .min_by_key(|b| hay.byte_freq[*b as usize])?;
-            (hay.byte_freq[best as usize] * 100 < total * 80).then_some(best)
+            (u64::from(hay.byte_freq[best as usize]) * 100 < total * 80).then_some(best)
         })
         .collect();
 
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let ranges = chunk_ranges(index.len(), threads);
+    // A tiny catalogue costs less to scan than to dispatch to OS threads.
+    let ranges = chunk_ranges(index.len(), threads.min(index.len().div_ceil(1024)));
 
-    let partials: Vec<Vec<SearchHit>> = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(ranges.len());
-        for (start, end) in &ranges {
-            let index = &index;
-            let patterns = &patterns;
-            let rarest = &rarest;
-            let query_folded = &query_folded;
-            handles.push(scope.spawn(move || {
-                let mut matcher = Matcher::new(Config::DEFAULT);
-                let mut local: Vec<SearchHit> = Vec::new();
-                'candidates: for i in *start..*end {
-                    for &b in rarest {
-                        if let Some(b) = b {
-                            if !hay.lower[i].as_bytes().contains(&b) {
-                                continue 'candidates;
-                            }
-                        }
+    let scan_range = |(start, end): (usize, usize)| {
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        let mut local: Vec<SearchHit> = Vec::new();
+        'candidates: for i in start..end {
+            if hay.ascii[i] {
+                for b in &rarest {
+                    if !hay.lower[i].as_bytes().contains(b) {
+                        continue 'candidates;
                     }
-
-                    // Every term must score; combine as a geometric mean.
-                    let mut log_sum = 0.0f64;
-                    let mut name_match = true;
-                    for (pi, pattern) in patterns.iter().enumerate() {
-                        let Some(score) = pattern.score(hay.combined[i].slice(..), &mut matcher)
-                        else {
-                            continue 'candidates;
-                        };
-                        log_sum += (score.max(1) as f64).ln();
-                        if name_match && pi < patterns.len() {
-                            name_match = pattern
-                                .score(hay.names[i].slice(..), &mut matcher)
-                                .is_some();
-                        }
-                    }
-                    let score = (log_sum / patterns.len() as f64).exp() as u32;
-
-                    // Substring boosts: an exact hit on the name beats a fuzzy
-                    // one; a hit in the synopsis beats a scattered match.
-                    let score = if hay.lower_names[i].contains(query_folded.as_str()) {
-                        score.saturating_add(700)
-                    } else if hay.lower[i].contains(query_folded.as_str()) {
-                        score.saturating_add(200)
-                    } else {
-                        score
-                    };
-
-                    local.push(SearchHit {
-                        id: i as u32,
-                        score,
-                        name_match,
-                    });
                 }
-                local.sort_unstable_by(|a, b| hit_cmp(index, a, b));
-                local.truncate(limit);
-                local
-            }));
+            }
+
+            // Every term must score; combine as a geometric mean.
+            let mut log_sum = 0.0f64;
+            let mut name_match = true;
+            for pattern in &patterns {
+                let Some(score) = pattern.score(hay.combined[i].slice(..), &mut matcher) else {
+                    continue 'candidates;
+                };
+                log_sum += (score.max(1) as f64).ln();
+                if name_match {
+                    name_match = pattern
+                        .score(hay.names[i].slice(..), &mut matcher)
+                        .is_some();
+                }
+            }
+            let score = (log_sum / patterns.len() as f64).exp() as u32;
+
+            // Substring boosts: an exact hit on the name beats a fuzzy
+            // one; a hit in the synopsis beats a scattered match.
+            let score = if hay.lower_names[i].contains(query_folded.as_str()) {
+                score.saturating_add(700)
+            } else if hay.lower[i].contains(query_folded.as_str()) {
+                score.saturating_add(200)
+            } else {
+                score
+            };
+
+            local.push(SearchHit {
+                id: i as u32,
+                score,
+                name_match,
+            });
         }
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("search chunk panicked"))
-            .collect()
-    });
+        retain_best(index, &mut local, limit);
+        local
+    };
+    let partials: Vec<Vec<SearchHit>> = if ranges.len() == 1 {
+        vec![scan_range(ranges[0])]
+    } else {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = ranges
+                .into_iter()
+                .map(|range| {
+                    let scan_range = &scan_range;
+                    scope.spawn(move || scan_range(range))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("search chunk panicked"))
+                .collect()
+        })
+    };
 
     let mut hits: Vec<SearchHit> = partials.into_iter().flatten().collect();
+    retain_best(index, &mut hits, limit);
     hits.sort_unstable_by(|a, b| hit_cmp(index, a, b));
-    hits.truncate(limit);
 
     // Precompute highlight ranges for the displayed prefix: the union of the
     // per-term match indices, merged into runs.
@@ -397,6 +414,14 @@ fn scan(index: &Index, hay: &Haystacks, query: &str, limit: usize) -> Vec<Highli
         .collect()
 }
 
+/// Partition in linear time; only the final displayed prefix needs sorting.
+fn retain_best(index: &Index, hits: &mut Vec<SearchHit>, limit: usize) {
+    if hits.len() > limit {
+        hits.select_nth_unstable_by(limit, |a, b| hit_cmp(index, a, b));
+        hits.truncate(limit);
+    }
+}
+
 fn push_range(
     name_len: usize,
     start: usize,
@@ -413,7 +438,8 @@ fn push_range(
 }
 
 /// Ranking: higher score first; name matches win ties; shorter names next;
-/// lexicographic order last, so results are deterministic.
+/// lexicographic order next; package id breaks ties between versions of the
+/// same name, so top-k partitioning has a total, deterministic ordering.
 fn hit_cmp(index: &Index, a: &SearchHit, b: &SearchHit) -> std::cmp::Ordering {
     b.score
         .cmp(&a.score)
@@ -423,6 +449,7 @@ fn hit_cmp(index: &Index, a: &SearchHit, b: &SearchHit) -> std::cmp::Ordering {
             let nb = &index.packages[b.id as usize].name;
             na.len().cmp(&nb.len()).then_with(|| na.cmp(nb))
         })
+        .then_with(|| a.id.cmp(&b.id))
 }
 
 /// Map of dependent-name -> dependent ids used by tests.

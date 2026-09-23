@@ -77,7 +77,7 @@ fn main() {
     let empty = best_of(20, || {
         engine.search(&idx, "", 500);
     });
-    println!("  empty query (recent list): {}", ms(empty));
+    println!("  empty query (package hubs): {}", ms(empty));
 
     // ---- graph ------------------------------------------------------------
     println!("\ngraph project + layout (300 iterations):");
@@ -96,7 +96,7 @@ fn main() {
             let project_ms = t.elapsed();
             let mut view = graph::GraphView::new(root, depth);
             let t = Instant::now();
-            view.rebuild(&idx, root, depth);
+            view.rebuild_dir(&idx, root, depth, dir);
             let layout = t.elapsed();
             println!(
                 "  {name:<7} {label:<8} nodes={:<4} edges={:<5} project={} layout={}",

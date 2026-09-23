@@ -137,3 +137,66 @@ fn fixture_index_builds_from_cache_doc() {
     assert_eq!(index.built_ms, 42);
     assert_eq!(index.len(), 10);
 }
+
+#[cfg(unix)]
+#[test]
+fn save_does_not_follow_a_preexisting_temporary_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let dir = temp_dir("symlink");
+    let cache = Cache::at(dir.clone());
+    let victim = dir.join("unrelated-file");
+    fs::write(&victim, b"keep this content").unwrap();
+    let planted = dir.join(format!("index-v4.bin.tmp-{}", std::process::id()));
+    symlink(&victim, &planted).unwrap();
+
+    cache
+        .save(&fixture_index())
+        .expect("save with a fresh temporary");
+    assert_eq!(fs::read(&victim).unwrap(), b"keep this content");
+    assert!(fs::symlink_metadata(&planted)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(matches!(
+        cache.load(None, 0).unwrap(),
+        CacheStatus::Fresh(_)
+    ));
+    fs::remove_dir_all(dir).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn saved_snapshot_is_private_to_its_owner() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = temp_dir("permissions");
+    let cache = Cache::at(dir.clone());
+    cache.save(&fixture_index()).unwrap();
+    let mode = fs::metadata(cache.path()).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn concurrent_saves_use_independent_temporary_files() {
+    let dir = temp_dir("concurrent");
+    let cache = Cache::at(dir.clone());
+    let index = fixture_index();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8).map(|_| scope.spawn(|| cache.save(&index))).collect();
+        for handle in handles {
+            handle.join().unwrap().expect("concurrent save");
+        }
+    });
+    assert!(matches!(
+        cache.load(None, 0).unwrap(),
+        CacheStatus::Fresh(_)
+    ));
+    assert_eq!(
+        fs::read_dir(&dir).unwrap().count(),
+        1,
+        "no abandoned temporaries"
+    );
+    fs::remove_dir_all(dir).ok();
+}

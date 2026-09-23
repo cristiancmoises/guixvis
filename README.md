@@ -5,6 +5,13 @@ terminal UI (Rust + ratatui) in the spirit of Arch's pacvis: search **any**
 package, see everything **related** to it, with fast fuzzy search and a
 polished, keyboard-first interface.
 
+[Português brasileiro](README.pt-BR.md) · [User guide](docs/usage.md) ·
+[Changes in 0.6.0](docs/releases/0.6.0.md) · [Security](SECURITY.md)
+
+Version 0.6.0 adds a package list in the browser, copyable Guix commands,
+native Emacs search and details, and remembered terminal themes. It also fixes
+search edge cases, stale responses, and unsafe cache temporary-file handling.
+
 ```
 ┌─ Search: emac▌────────────────────────────────────────────────┐
 │  [Overview(1)] [Dependencies(2)] [Reverse deps(3)] [Graph(4)] │
@@ -48,6 +55,9 @@ whatever does not suit you.
   alphabet.
 - **Zero configuration** — works on any GNU Guix system; first run builds the
   index in the background with live progress.
+- **Package commands** — preview and copy `guix install`, `guix remove`,
+  `guix show`, and `guix shell` commands from the browser or Emacs. You choose
+  when to run them; browsing never changes your profile.
 
 ## Demo video
 
@@ -79,6 +89,11 @@ the license chip and the dependency/dependent counts, and a name that only
 matched through its synopsis renders dimmed — so "why is this here?" answers
 itself.
 
+Use **Packages** in the toolbar to keep the search results on screen. Each row
+shows the version, synopsis, license, and dependency counts. The list displays
+up to 100 ranked results; narrow the query when it reaches that limit. Switch
+back to **Graph** whenever you want to follow the connections.
+
 Names above the bubbles are placed with measured boxes and a background halo:
 labels that would collide are simply not drawn (the hover tooltip still names
 every bubble), so the graph stays legible instead of turning into a pile of
@@ -96,28 +111,36 @@ overlapping text.
 
 ## Themes
 
-Both interfaces ship with nine selectable color themes: **dark** (default),
+Both interfaces ship with nine selectable color themes: **dark** (TUI default),
 **one**, **light**, **dracula**, **nord**, **gruvbox-dark**, **tokyo-night**,
 **catppuccin-mocha** and **tron** — the last one is pure black with neon
 bubbles, which is what you want on an OLED panel at night.
 
 - TUI: press `T` to cycle (the active theme is shown in the status bar);
+  the choice is saved to `$XDG_CONFIG_HOME/guixvis/theme` (normally
+  `~/.config/guixvis/theme`). Use `guixvis --theme nord` for a one-run override.
   `NO_COLOR` is honored with a grayscale fallback.
 - Web UI: pick a theme in the topbar selector; the choice is remembered
-  between sessions.
+  between sessions. **System** follows your operating system's light/dark
+  preference and is the default for new users. Reduced-motion preferences
+  are respected, and settled graphs stop requesting animation frames.
 
 The TUI in the dracula theme:
 
 ![guixvis TUI — dracula theme](assets/guixvis-tui-dracula.png)
 
-The web UI in the nord theme:
+The package list and command previews in 0.6.0, using the nord theme:
+
+![Guixvis 0.6.0 package list and command previews](assets/guixvis-packages-0.6.png)
+
+The graph in the nord theme:
 
 ![guixvis web — nord theme](assets/guixvis-web-nord.png)
 
 ## Requirements
 
 - GNU Guix (`guix` on `PATH`, or set `GUIX` to your Guix profile).
-- Rust 1.85+ (edition 2021) to build from source.
+- Rust 1.88+ (edition 2021) to build from source.
 
 ## Install
 
@@ -126,11 +149,14 @@ The web UI in the nord theme:
 ```sh
 git clone https://codeberg.org/berkeley/guixvis guixvis
 cd guixvis
-cargo install --path .            # installs to ~/.cargo/bin
+cargo install --locked --features web --path .  # installs to ~/.cargo/bin
 # or, to put it on your PATH directly:
-cargo install --root ~/.local --path .
+cargo install --locked --features web --root ~/.local --path .
 guixvis
 ```
+
+Omit `--features web` if you only want the terminal interface. The browser and
+native Emacs client need the web feature.
 
 Mirrors: `github.com/cristiancmoises/guixvis`,
 `git.securityops.co/cristiancmoises/guixvis`,
@@ -152,10 +178,10 @@ The channel builds guixvis from source with a vendored Cargo registry
 
 ### Release artifacts (.zupt)
 
-Prebuilt sources are published on every forge as `guixvis-<version>.zupt`, a
+Existing source releases are available as `guixvis-<version>.zupt`, a
 [zupt](https://git.securityops.com.br/cristiancmoises/zupt) archive written with
 the maximum compression level and **no password**, so anyone can open it. To
-unpack one:
+unpack one (0.4.0 is an example of an existing archive):
 
 ```sh
 zupt extract guixvis-0.4.0.zupt    # creates ./guixvis-0.4.0/
@@ -179,16 +205,22 @@ without extra tools.
 
 ### Emacs
 
-There is a small glue file in `elisp/` for people who live in Emacs. Point
-`load-path` at it and you get `M-x guixvis` (runs the TUI in a `term`
-buffer) and `M-x guixvis-web`. If you also use emacs-guix, one call drops
-both into its `guix` popup:
+Load `elisp/guixvis.el` to get the terminal launcher and a native package
+browser. Start `guixvis web` in a terminal, then use `M-x guixvis-search` for
+an asynchronous results table or `M-x guixvis-package` to look up a name.
+Press `RET` for details, `g` to refresh, `s` to search, `w` to copy a Guix
+command, and `b` to open the browser. No package commands run automatically.
 
 ```elisp
 (add-to-list 'load-path "/path/to/guixvis/elisp")
 (require 'guixvis)
-(guixvis-popup-install)
+;; Optional, if you use Emacs-Guix:
+;; (guixvis-popup-install)
 ```
+
+`M-x guixvis` runs the TUI in a reusable `term` buffer; `M-x guixvis-web`
+opens the local website. Set `guixvis-web-url` if you use a different local
+port. See the [Emacs guide](docs/usage.md#emacs) for the available settings.
 
 The file ships here rather than in emacs-guix so the menu entries only show
 up for people who actually have the program installed (see
@@ -199,6 +231,8 @@ up for people who actually have the program installed (see
 ```
 guixvis              start the explorer (builds the index on first run)
 guixvis --rebuild    force an index rebuild
+guixvis --theme nord  choose a terminal palette for this run
+guixvis web          start the local browser/Emacs API
 guixvis --help       all options
 ```
 
@@ -218,7 +252,7 @@ guixvis --help       all options
 | `+` / `−` | graph depth (1–8) |
 | `g` / `G` (empty search) | top / bottom (graph: refocus root) |
 | `o` (empty search) | open homepage in `$BROWSER`/`xdg-open` |
-| `T` | cycle theme (9 palettes) |
+| `T` | cycle and save theme (9 palettes) |
 | `R` | rebuild the index in the background |
 | `?` | help |
 | `q` (empty search) / `Ctrl+C` | quit |
@@ -297,8 +331,14 @@ root, `e` cycles edge modes, `l` toggles labels, `1`–`4` (or `Tab`) switch tab
 
 ## Performance
 
-Startup, search and layout are measured, not guessed. `cargo run --release
---example bench` prints the same numbers on your machine:
+Run `cargo run --release --example bench` to measure cache loading, search,
+and graph layout on your machine. `node examples/bench-web.cjs` measures the
+browser's graph layout code separately.
+
+The table below records measurements from earlier releases on a 32,500-package
+index. Your channel, machine, and cache state affect the result; these are not
+latency guarantees. See the [0.6.0 notes](docs/releases/0.6.0.md) for this
+release's changes and verification.
 
 | Step | Time | Notes |
 |---|---|---|
@@ -330,29 +370,34 @@ deliberately boring about reachability:
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Resource-Policy` and `Cache-Control: no-store` on the API;
 - validates package names from the URL, caps search queries at 200 characters,
-  depth at 1–8 and graph nodes at 200 with a bounded concurrency of four;
+  depth at 1–8 and graphs at 200 related nodes plus the root, with a bounded
+  concurrency of four;
 - writes the embedded Guile script into a private `0700` directory as a `0600`
   file (the system temp directory is world-writable), and refuses absurdly large
   cache files before reading them;
 - caps request bodies at 8 KB: a read-only GET API has no business receiving
   one.
 
-There is no authentication because there is nothing to authenticate: the API is
-read-only, loopback-only and has no state to change.
+The API has no login and is intended for local use. Package commands are shown
+as text and copied only when requested; the server never installs or removes
+packages. Do not expose it through a public proxy. See [SECURITY.md](SECURITY.md)
+for the trust boundaries and remaining limitations.
 
 ## Development
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test                                   # unit + fixture tests
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-features            # unit + fixture + web tests
+node --test tests/web_graph_tests.cjs         # browser graph logic
+emacs -Q --batch -L elisp -l elisp/guixvis-tests.el -f ert-run-tests-batch-and-exit
 cargo test --test live_guix_tests -- --ignored   # live tests against real Guix
 cargo test --release --test live_guix_tests real_index_search_latency -- --ignored
 ```
 
 Layout: `src/index.rs` (in-memory index + BFS), `src/search.rs` (nucleo
 fuzzy search worker), `src/indexer.rs` (`guix repl` subprocess), `src/cache.rs`
-(gzipped cache), `src/graph.rs` (graph extraction + layout), `src/app.rs`
+(binary snapshot), `src/graph.rs` (graph extraction + layout), `src/app.rs`
 (state + keys), `src/ui/*` (rendering), `data/guix-index.scm` (Guile indexer).
 
 ## Troubleshooting
