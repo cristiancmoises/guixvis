@@ -290,7 +290,16 @@ mod tests {
             .create_new(true)
             .open(&path)
             .unwrap();
-        write!(file, "#!/bin/sh\n{body}\n").unwrap();
+        // Guix build sandboxes expose their shell through PATH, not /bin/sh.
+        let shell = std::env::var_os("PATH")
+            .and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .map(|dir| dir.join("sh"))
+                    .find(|path| path.is_file())
+            })
+            .expect("a POSIX shell on PATH for the subprocess fixture");
+        let shell = fs::canonicalize(shell).unwrap();
+        write!(file, "#!{}\n{body}\n", shell.display()).unwrap();
         file.set_permissions(fs::Permissions::from_mode(0o700))
             .unwrap();
         drop(file);
