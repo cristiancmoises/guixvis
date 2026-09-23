@@ -178,30 +178,34 @@ The channel builds guixvis from source with a vendored Cargo registry
 
 ### Release artifacts (.zupt)
 
-Existing source releases are available as `guixvis-<version>.zupt`, a
+Source releases are available as `guixvis-<version>.zupt`, a
 [zupt](https://git.securityops.com.br/cristiancmoises/zupt) archive written with
 the maximum compression level and **no password**, so anyone can open it. To
-unpack one (0.4.0 is an example of an existing archive):
+download the archive and `SHA256SUMS` from the
+[0.6.0 release](https://codeberg.org/berkeley/guixvis/releases/tag/v0.6.0), then:
 
 ```sh
-zupt extract guixvis-0.4.0.zupt    # creates ./guixvis-0.4.0/
-zupt list    guixvis-0.4.0.zupt    # show the contents without extracting
-zupt info    guixvis-0.4.0.zupt    # format, codec, block count, size
-zupt test    guixvis-0.4.0.zupt    # verify the checksums
+sha256sum -c SHA256SUMS
+zupt test    guixvis-0.6.0.zupt    # verify archive integrity
+zupt list    guixvis-0.6.0.zupt    # inspect paths before extracting
+zupt extract guixvis-0.6.0.zupt    # creates ./guixvis-0.6.0/
 ```
 
 Then build it the normal way:
 
 ```sh
-cd guixvis-0.4.0
-cargo build --release --features web
+cd guixvis-0.6.0
+cargo build --locked --release --features web
 ```
 
 `zupt` comes from the securityops channel (`guix install zupt`) or from its own
 repositories. Releases up to 0.3.0 were re-packed from `.tar.gz` into `.zupt`,
 so every version now ships in the same format; the Guix channel keeps a plain
 `.tar.gz` for its package source, because the build daemon has to unpack it
-without extra tools.
+without extra tools. Those internal package inputs are separate from release
+downloads: new uploaded release archives use `.zupt` only. Forge-generated
+source links may still offer other formats. See [Releasing](docs/releasing.md)
+for the packaging and verification checklist.
 
 ### Emacs
 

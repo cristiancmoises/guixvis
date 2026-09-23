@@ -39,3 +39,25 @@ No dependency additions are planned. No web endpoint will mutate Guix state.
 The deadline limits breadth. Prefer complete, verified improvements over new
 subsystems. Guix and forge availability may limit live checks; report those
 limits explicitly. If the cutoff arrives, retain local work and do not publish.
+
+## Follow-up: tagged ZUPT release
+
+After the original delivery, the user requested a new commit/push, annotated
+tag, and release with `.zupt` packages. This follow-up authorizes publication
+after the original deadline; it does not change application behavior.
+
+1. Check existing tags/releases and publishing accounts; preserve any existing
+   remote work. Verify the installed ZUPT CLI and rerun tests/dependency audit.
+2. Document `.zupt` release downloads and the packaging procedure. Commit only
+   these documentation changes under the configured owner identity.
+3. Export the committed source, compress with ZUPT level 9 without encryption,
+   test/extract it, compare every file with the Git tree, and generate SHA-256.
+4. Create `v0.6.0`, push the branch and tag to all four existing remotes, then
+   upload identical `.zupt` and checksum assets to releases on all four forges.
+5. Verify remote tag targets, release authors, downloaded asset hashes, and
+   public release state. Record actual publication results in the handoff.
+
+No new binary platform or dependency is introduced. Packaging and publication
+are I/O operations, so Bend does not apply. Credentials stay in memory and are
+sent only to their intended HTTPS hosts. Never overwrite an existing tag or
+asset on a mismatch; investigate first.

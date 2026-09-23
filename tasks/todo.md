@@ -14,3 +14,13 @@ Delivery: commit and push to the four configured remotes before 17:50 Brazil
 time, then verify their branch hashes. The user also requested a native local
 Guix installation of the finished version. The final handoff records those
 external results; this checklist describes the contents of the release commit.
+
+## Tagged release follow-up
+
+- [x] Confirm the existing version and ZUPT tooling; rerun Rust tests and audit.
+- [x] Document source archives, checksum verification, and the release procedure.
+
+Publication gate: test and extract the committed `.zupt` archive; compare its
+contents to the Git tree; verify the annotated tag and all four published
+releases with the same downloaded asset hashes. Report external results in
+the handoff rather than committing an unverified success claim.

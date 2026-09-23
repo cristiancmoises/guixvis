@@ -178,27 +178,31 @@ vendado (offline, `cargo --frozen`), incluindo a interface web
 Os fontes publicados em cada forja saem como `guixvis-<versão>.zupt`, um arquivo
 [zupt](https://git.securityops.com.br/cristiancmoises/zupt) gerado no nível
 máximo de compressão e **sem senha**, então qualquer pessoa consegue abrir. Para
-descompactar:
+descompactar, baixe o arquivo e `SHA256SUMS` na
+[release 0.6.0](https://codeberg.org/berkeley/guixvis/releases/tag/v0.6.0):
 
 ```sh
-zupt extract guixvis-0.4.0.zupt    # cria ./guixvis-0.4.0/
-zupt list    guixvis-0.4.0.zupt    # mostra o conteúdo sem extrair
-zupt info    guixvis-0.4.0.zupt    # formato, codec, blocos, tamanho
-zupt test    guixvis-0.4.0.zupt    # confere os checksums
+sha256sum -c SHA256SUMS
+zupt test    guixvis-0.6.0.zupt    # verifica a integridade do arquivo
+zupt list    guixvis-0.6.0.zupt    # confira os caminhos antes de extrair
+zupt extract guixvis-0.6.0.zupt    # cria ./guixvis-0.6.0/
 ```
 
 Depois é compilar normalmente:
 
 ```sh
-cd guixvis-0.4.0
-cargo build --release --features web
+cd guixvis-0.6.0
+cargo build --locked --release --features web
 ```
 
 O `zupt` vem do canal securityops (`guix install zupt`) ou dos repositórios
 dele. As releases até a 0.3.0 foram repacotadas de `.tar.gz` para `.zupt`, então
 todas as versões agora saem no mesmo formato; o canal Guix mantém um `.tar.gz`
 simples como fonte do pacote, porque o daemon de build precisa descompactar sem
-ferramentas extras.
+ferramentas extras. Esses insumos internos são separados dos downloads de
+release: os novos arquivos publicados usam somente `.zupt`. Os links de fontes
+gerados automaticamente pelas forjas ainda podem oferecer outros formatos.
+O [guia de publicação](docs/releasing.md) registra como empacotar e conferir.
 
 ### Emacs
 
