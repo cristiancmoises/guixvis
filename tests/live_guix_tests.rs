@@ -3,44 +3,28 @@
 
 mod common;
 
-use std::io::Read;
-use std::process::{Command, Stdio};
-
-use guixvis::model::IndexDoc;
-
-use common::load_fixture;
-
 #[test]
 #[ignore = "requires `guix` on PATH and ~1-5 minutes"]
 fn live_guix_indexer_produces_valid_index() {
-    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/data/guix-index.scm");
-    let mut child = Command::new("guix")
-        .args(["repl", "--", script, "testcommit", "0"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn guix repl");
-    let mut stdout = child.stdout.take().expect("stdout");
-    let buf = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        buf
-    })
-    .join()
-    .expect("stdout reader");
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .expect("stderr")
-        .read_to_string(&mut stderr)
-        .expect("read stderr");
-    let status = child.wait().expect("wait");
-    assert!(status.success(), "guix repl failed: {stderr}");
-
-    let doc: IndexDoc = serde_json::from_slice(&buf).expect("valid JSON");
-    assert_eq!(doc.header.schema, 3);
-    assert_eq!(doc.header.guix_commit, "testcommit");
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let guix = guixvis::guix_env::current_guix().expect("resolve Guix");
+    let origin = guixvis::guix_env::probe_origin(&guix, &cancel).expect("probe origin");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let started = std::time::Instant::now();
+    let (doc, raw, commit) =
+        guixvis::indexer::build(&guix, &origin, &cancel, &tx).expect("bounded extraction");
+    eprintln!(
+        "cold extraction: {:.3}s, {} bytes, {} objects ({} catalog), {} diagnostics, system {}",
+        started.elapsed().as_secs_f64(),
+        raw.len(),
+        doc.packages.len(),
+        doc.packages.iter().filter(|p| p.catalog).count(),
+        doc.diagnostics.len(),
+        origin.system
+    );
+    assert_eq!(doc.header.schema, guixvis::model::SCHEMA_VERSION);
+    assert_eq!(doc.header.guix_commit, commit);
+    assert_eq!(doc.header.origin, origin);
     assert!(
         doc.header.package_count as usize >= 30000,
         "expected a full package set, got {}",
@@ -52,21 +36,32 @@ fn live_guix_indexer_produces_valid_index() {
     assert!(index.names.contains_key("emacs"));
     assert!(index.names.contains_key("zlib"));
     assert!(index.names.contains_key("gtk+"));
-    // Every package references a real name; spot-check known edges.
+    // Exact object/category fidelity is independently checked by
+    // tests/guix_indexer_live.scm; this checks the real Rust ingestion path.
     let emacs = index.names["emacs"];
     let deps: Vec<&str> = index.packages[emacs as usize]
         .deps()
         .map(|(d, _)| index.packages[d as usize].name.as_ref())
         .collect();
     assert!(deps.contains(&"gtk+"), "emacs should depend on gtk+");
-    let _ = load_fixture();
+    assert!(index.packages.iter().any(|p| !p.catalog));
+    let blob = guixvis::blob::encode(&index);
+    let started = std::time::Instant::now();
+    let loaded = guixvis::blob::decode(&blob, 0).unwrap();
+    assert_eq!(loaded.snapshot_id(), index.snapshot_id());
+    eprintln!(
+        "warm decode: {:.3}s, {} bytes",
+        started.elapsed().as_secs_f64(),
+        blob.len()
+    );
 }
 
 #[test]
 #[ignore = "requires a built cache (~/.cache/guixvis) and a release build"]
 fn real_index_search_latency() {
     let cache = guixvis::cache::Cache::new().expect("cache directory");
-    let guixvis::cache::CacheStatus::Fresh(index) = cache.load(None, 0).expect("load snapshot")
+    let (guixvis::cache::CacheStatus::Fresh(index)
+    | guixvis::cache::CacheStatus::Unverified(index)) = cache.load(None, 0).expect("load snapshot")
     else {
         panic!("run guixvis once to build the cache");
     };

@@ -1,5 +1,7 @@
 /target
 PROMPT.md
+/tasks/
+/docs/*prompt*.md
 *.swp
 *.tmp
 *.elc

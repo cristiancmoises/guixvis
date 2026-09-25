@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, RwLock};
 
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
+use axum::extract::{rejection::QueryRejection, ConnectInfo, DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{
     ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
     CONTENT_TYPE, HOST, ORIGIN, REFERRER_POLICY, VARY, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
@@ -161,6 +161,7 @@ fn pump(state: Arc<AppState>, rx: Receiver<IndexEvent>, loader: std::thread::Joi
 
 enum ApiError {
     BadRequest(String),
+    Conflict,
     NotFound,
     Unavailable(String),
 }
@@ -169,6 +170,10 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, json!({ "error": msg })),
+            ApiError::Conflict => (
+                StatusCode::CONFLICT,
+                json!({"error":"index changed; search again to select an exact package"}),
+            ),
             ApiError::NotFound => (
                 StatusCode::NOT_FOUND,
                 json!({ "error": "package not found" }),
@@ -469,12 +474,30 @@ struct Health {
     packages: usize,
     generation: u64,
     guix_commit: String,
+    snapshot: Option<String>,
+    complete: bool,
+    diagnostics_count: usize,
+    origin_verified: bool,
+    origin: Option<crate::model::GuixOrigin>,
     #[serde(flatten)]
     phase: serde_json::Value,
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Response {
     let snap = state.snapshot();
+    let snapshot = snap
+        .as_ref()
+        .map(|(index, _, _)| index.snapshot_id().to_string());
+    let complete = snap
+        .as_ref()
+        .is_some_and(|(index, _, _)| index.is_complete());
+    let diagnostics_count = snap
+        .as_ref()
+        .map_or(0, |(index, _, _)| index.diagnostics.len());
+    let origin_verified = snap
+        .as_ref()
+        .is_some_and(|(index, _, _)| index.origin.is_verified());
+    let origin = snap.as_ref().map(|(index, _, _)| index.origin.clone());
     let (packages, generation, commit, ok) = match snap {
         Some((index, _, generation)) => (index.len(), generation, index.guix_commit.clone(), true),
         None => (0, 0, String::new(), false),
@@ -489,6 +512,11 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
         packages,
         generation,
         guix_commit: commit,
+        snapshot,
+        complete,
+        diagnostics_count,
+        origin_verified,
+        origin,
         phase: serde_json::Value::Object(phase_obj),
     };
     (StatusCode::OK, Json(health)).into_response()
@@ -502,8 +530,10 @@ struct SearchParams {
 
 async fn search(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<SearchParams>,
+    params: Result<Query<SearchParams>, QueryRejection>,
 ) -> Result<Response, ApiError> {
+    let Query(params) =
+        params.map_err(|_| ApiError::BadRequest("invalid search parameters".into()))?;
     let q = params.q.unwrap_or_default();
     if q.chars().count() > 200 {
         return Err(ApiError::BadRequest(
@@ -534,6 +564,7 @@ async fn search(
         .map(|h| {
             let p = &index_for_items.packages[h.hit.id as usize];
             json!({
+                "id":p.id, "catalog":p.catalog, "snapshot":index_for_items.snapshot_id(),
                 "name": p.name.as_ref(),
                 "version": p.version.as_ref(),
                 "synopsis": p.synopsis.as_ref(),
@@ -550,6 +581,8 @@ async fn search(
         StatusCode::OK,
         Json(json!({
             "generation": generation,
+            "snapshot":index_for_items.snapshot_id(), "complete":index_for_items.is_complete(),
+            "diagnostics_count":index_for_items.diagnostics.len(),
             "capped": capped,
             "items": items,
         })),
@@ -557,10 +590,55 @@ async fn search(
         .into_response())
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+struct ExactParams {
+    id: Option<u32>,
+    snapshot: Option<String>,
+}
+
+fn resolve_root(index: &Index, name: &str, exact: &ExactParams) -> Result<u32, ApiError> {
+    match (exact.id, exact.snapshot.as_deref()) {
+        (None, None) => index.names.get(name).copied().ok_or(ApiError::NotFound),
+        (Some(id), Some(snapshot)) => {
+            if snapshot.len() != 64
+                || !snapshot
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            {
+                return Err(ApiError::BadRequest("invalid snapshot token".into()));
+            }
+            if snapshot != index.snapshot_id() {
+                return Err(ApiError::Conflict);
+            }
+            let p = index.packages.get(id as usize).ok_or(ApiError::NotFound)?;
+            if p.name.as_ref() != name {
+                return Err(ApiError::BadRequest(
+                    "package ID does not match the path name".into(),
+                ));
+            }
+            Ok(id)
+        }
+        _ => Err(ApiError::BadRequest(
+            "id and snapshot must be supplied together".into(),
+        )),
+    }
+}
+
+fn kind_name(kind: crate::index::DepKind) -> &'static str {
+    match kind {
+        crate::index::DepKind::Input => "input",
+        crate::index::DepKind::Propagated => "propagated",
+        crate::index::DepKind::Native => "native",
+    }
+}
+
 async fn package(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    exact: Result<Query<ExactParams>, QueryRejection>,
 ) -> Result<Response, ApiError> {
+    let Query(exact) =
+        exact.map_err(|_| ApiError::BadRequest("invalid package parameters".into()))?;
     if !valid_package_name(&name) {
         return Err(ApiError::BadRequest("invalid package name".into()));
     }
@@ -575,22 +653,17 @@ async fn package(
         .map_err(|_| ApiError::Unavailable("shutting down".into()))?;
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, ApiError> {
         let _permit = permit;
-        let Some(id) = index.names.get(name.as_str()).copied() else {
-            return Err(ApiError::NotFound);
-        };
+        let id=resolve_root(&index,&name,&exact)?;
         let p = &index.packages[id as usize];
         let deps: Vec<serde_json::Value> = p
             .deps()
             .map(|(dep, kind)| {
                 let d = &index.packages[dep as usize];
                 json!({
+                    "id":d.id,"catalog":d.catalog,"snapshot":index.snapshot_id(),
                     "name": d.name.as_ref(),
                     "version": d.version.as_ref(),
-                    "kind": match kind {
-                        crate::index::DepKind::Input => "input",
-                        crate::index::DepKind::Propagated => "propagated",
-                        crate::index::DepKind::Native => "native",
-                    },
+                    "kind":kind_name(kind), "kinds":p.dep_kinds(dep).into_iter().map(kind_name).collect::<Vec<_>>(),
                 })
             })
             .collect();
@@ -599,6 +672,8 @@ async fn package(
             .map(|d| {
                 let dep = &index.packages[*d as usize];
                 json!({
+                    "id":dep.id,"catalog":dep.catalog,"snapshot":index.snapshot_id(),
+                    "kinds":dep.dep_kinds(id).into_iter().map(kind_name).collect::<Vec<_>>(),
                     "name": dep.name.as_ref(),
                     "version": dep.version.as_ref(),
                     "dependents": index.dependents_count(*d),
@@ -611,11 +686,16 @@ async fn package(
             .filter(|n| **n != id)
             .map(|n| {
                 let nb = &index.packages[*n as usize];
-                json!({ "name": nb.name.as_ref(), "version": nb.version.as_ref() })
+                json!({ "name": nb.name.as_ref(), "version": nb.version.as_ref(), "id":nb.id,"catalog":nb.catalog,"snapshot":index.snapshot_id() })
             })
             .collect();
         Ok(json!({
             "generation": generation,
+            "id":p.id,"catalog":p.catalog,"snapshot":index.snapshot_id(),
+            "complete":index.is_complete(),"diagnostics_count":index.diagnostics.len(),
+            "origin":index.origin,
+            "command_safe":p.catalog && index.packages.iter().filter(|candidate| candidate.catalog && candidate.name==p.name && candidate.version==p.version).count()==1,
+            "relations_count":p.relation_count(),
             "name": p.name.as_ref(),
             "version": p.version.as_ref(),
             "synopsis": p.synopsis.as_ref(),
@@ -640,13 +720,17 @@ struct GraphParams {
     dir: Option<String>,
     depth: Option<u8>,
     budget: Option<usize>,
+    id: Option<u32>,
+    snapshot: Option<String>,
 }
 
 async fn graph(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
-    Query(params): Query<GraphParams>,
+    params: Result<Query<GraphParams>, QueryRejection>,
 ) -> Result<Response, ApiError> {
+    let Query(params) =
+        params.map_err(|_| ApiError::BadRequest("invalid graph parameters".into()))?;
     if !valid_package_name(&name) {
         return Err(ApiError::BadRequest("invalid package name".into()));
     }
@@ -663,7 +747,7 @@ async fn graph(
     if !(1..=8).contains(&depth) {
         return Err(ApiError::BadRequest("depth must be 1..=8".into()));
     }
-    let budget = params.budget.unwrap_or(NODE_BUDGET).min(NODE_BUDGET);
+    let budget = params.budget.unwrap_or(NODE_BUDGET).clamp(1, NODE_BUDGET);
     let Some((index, _, generation)) = state.snapshot() else {
         return Err(ApiError::Unavailable("index is still building".into()));
     };
@@ -675,9 +759,8 @@ async fn graph(
         .map_err(|_| ApiError::Unavailable("shutting down".into()))?;
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, ApiError> {
         let _permit = permit;
-        let Some(root) = index.names.get(name.as_str()).copied() else {
-            return Err(ApiError::NotFound);
-        };
+        let exact = ExactParams { id: params.id, snapshot: params.snapshot };
+        let root=resolve_root(&index,&name,&exact)?;
         let projection = project(&index, root, dir, depth, budget);
         let nodes: Vec<serde_json::Value> = projection
             .nodes
@@ -686,9 +769,11 @@ async fn graph(
             .map(|(i, id)| {
                 let p = &index.packages[*id as usize];
                 json!({
+                    "id":p.id,"catalog":p.catalog,"snapshot":index.snapshot_id(),
                     "name": p.name.as_ref(),
                     "version": p.version.as_ref(),
                     "degree": index.dependents_count(*id) + p.dep_count(),
+                    "kinds":projection.kinds_of[i].iter().copied().map(kind_name).collect::<Vec<_>>(),
                     "depth": projection.depth_of[i],
                     "kind": projection.kind_of[i].map(|k| match k {
                         crate::index::DepKind::Input => "input",
@@ -707,11 +792,17 @@ async fn graph(
                 json!({
                     "from": from_name.as_ref(),
                     "to": to_name.as_ref(),
+                    "from_id":projection.nodes[*from as usize], "to_id":projection.nodes[*to as usize],
+                    "kinds":index.packages[projection.nodes[*from as usize] as usize].dep_kinds(projection.nodes[*to as usize]).into_iter().map(kind_name).collect::<Vec<_>>(),
                 })
             })
             .collect();
         Ok(json!({
             "generation": generation,
+            "snapshot":index.snapshot_id(),"root_id":root,
+            "complete":index.is_complete(),"diagnostics_count":index.diagnostics.len(),
+            "discovered_total":projection.discovered_total,"discovery_complete":projection.discovery_complete,
+            "edges_total":projection.edges_total,"edges_truncated":projection.edges_truncated,
             "root": name,
             "dir": if dir == Dir::Deps { "deps" } else { "reverse" },
             "depth": depth,
@@ -752,5 +843,40 @@ async fn shutdown_signal() {
     if tokio::signal::ctrl_c().await.is_err() {
         // Signals unavailable (e.g. odd platforms): never exit early.
         std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(test)]
+mod loading_tests {
+    use super::*;
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn unavailable_index_returns_json_503() {
+        let state = Arc::new(AppState {
+            inner: RwLock::new(StateInner {
+                index: None,
+                engine: None,
+                generation: 0,
+                phase: WebPhase::Loading { done: 0, total: 0 },
+            }),
+            semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            _cancel: Arc::new(Default::default()),
+        });
+        let api = router(state);
+        for path in ["search?q=emacs", "package/emacs", "graph/emacs"] {
+            let request = Request::get(format!("/api/v1/{path}"))
+                .header("host", "127.0.0.1")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))))
+                .body(Body::empty())
+                .unwrap();
+            let response = api.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(value["error"].is_string());
+        }
     }
 }

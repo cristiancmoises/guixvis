@@ -19,7 +19,9 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
         .border_style(th.border)
         .title(format!(
             " results {}",
-            if app.query.is_empty() {
+            if app.search_pending() {
+                "(Searching · previous results)".to_string()
+            } else if app.query.is_empty() {
                 "(hubs first · type to search)".to_string()
             } else {
                 format!("({})", app.results.len())

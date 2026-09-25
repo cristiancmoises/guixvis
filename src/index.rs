@@ -1,16 +1,30 @@
 //! In-memory package index: interned strings, reverse dependency edges,
 //! and bounded BFS traversals used by the tree and graph views.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::error::IndexError;
-use crate::model::{IndexDoc, SCHEMA_VERSION};
+use crate::model::{GuixOrigin, IndexDiagnostic, IndexDoc, SCHEMA_VERSION};
+use sha2::{Digest, Sha256};
 
 pub use crate::model::SCHEMA_VERSION as INDEX_SCHEMA_VERSION;
 
 /// How many synopsis characters go into the fuzzy-search haystack.
 pub const SYN_LIMIT: usize = 200;
+
+/// Terminal-safe metadata; multiline descriptions may retain line breaks/tabs.
+fn clean_text(text: &str, multiline: bool) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() && !(multiline && matches!(c, '\n' | '\t')) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DepKind {
@@ -33,6 +47,7 @@ impl DepKind {
 #[derive(Debug)]
 pub struct Package {
     pub id: u32,
+    pub catalog: bool,
     pub name: Arc<str>,
     pub version: Arc<str>,
     pub synopsis: Arc<str>,
@@ -51,7 +66,12 @@ impl Package {
     /// input kinds (a package listed in both `inputs` and `native-inputs`
     /// appears once, as its first occurrence).
     pub fn deps(&self) -> impl Iterator<Item = (u32, DepKind)> + '_ {
-        let mut seen: Vec<u32> = Vec::with_capacity(self.dep_count());
+        let mut seen = HashSet::with_capacity(self.relation_count());
+        self.typed_deps().filter(move |(id, _)| seen.insert(*id))
+    }
+
+    /// All typed relations; the same object can appear under several kinds.
+    pub fn typed_deps(&self) -> impl Iterator<Item = (u32, DepKind)> + '_ {
         self.inputs
             .iter()
             .copied()
@@ -63,18 +83,20 @@ impl Package {
                     .map(|i| (i, DepKind::Propagated)),
             )
             .chain(self.native.iter().copied().map(|i| (i, DepKind::Native)))
-            .filter(move |(i, _)| {
-                if seen.contains(i) {
-                    false
-                } else {
-                    seen.push(*i);
-                    true
-                }
-            })
     }
 
     pub fn dep_count(&self) -> usize {
+        self.deps().count()
+    }
+
+    pub fn relation_count(&self) -> usize {
         self.inputs.len() + self.propagated.len() + self.native.len()
+    }
+
+    pub fn dep_kinds(&self, id: u32) -> Vec<DepKind> {
+        self.typed_deps()
+            .filter_map(|(dep, kind)| (dep == id).then_some(kind))
+            .collect()
     }
 }
 
@@ -103,6 +125,9 @@ pub struct Index {
     pub generated_ms: u64,
     /// Wall-clock time (ms) when this index was produced.
     pub built_ms: u64,
+    pub diagnostics: Arc<[IndexDiagnostic]>,
+    pub origin: GuixOrigin,
+    snapshot: String,
 }
 
 impl Index {
@@ -118,51 +143,32 @@ impl Index {
             return Err(IndexError::Count(header.package_count, len));
         }
 
-        // Pass 1: name -> id, so dependency *names* from the indexer become
-        // ids here. Everything derived (reverse edges, module grouping) is
-        // built once in `from_packages`.
-        let mut names: HashMap<&str, u32> = HashMap::with_capacity(len);
-        for pj in &doc.packages {
-            if pj.name.is_empty() {
-                return Err(IndexError::EmptyName(pj.id));
-            }
-            names.entry(pj.name.as_str()).or_insert(pj.id);
+        if len > 1_000_000 {
+            return Err(IndexError::Limit("packages"));
         }
-
-        // Pass 2: build packages in id order, resolving each dependency name.
+        // IDs come from Guile object identity, never from a name lookup.
         let intern = |s: &str| -> Arc<str> { Arc::from(s) };
 
         let mut packages: Vec<Package> = Vec::with_capacity(len);
         for pj in &doc.packages {
             let file: Arc<str> = intern(&pj.file.0);
 
-            // Deduplicate across input kinds; first occurrence wins.
-            let mut edges: Vec<(u32, DepKind)> = Vec::new();
-            let mut add = |list: &[String], kind: DepKind| {
-                for n in list {
-                    if let Some(&dep) = names.get(n.as_str()) {
-                        if !edges.iter().any(|(d, _)| *d == dep) {
-                            edges.push((dep, kind));
-                        }
-                    }
-                    // Unknown names (objects that are not packages) are
-                    // dropped: they are not reachable through this index.
+            let unique = |list: &[u32]| -> Result<Arc<[u32]>, IndexError> {
+                if list.len() > 100_000 {
+                    return Err(IndexError::Limit("dependencies"));
                 }
-            };
-            add(&pj.inputs, DepKind::Input);
-            add(&pj.propagated_inputs, DepKind::Propagated);
-            add(&pj.native_inputs, DepKind::Native);
-
-            let ids_of = |kind: DepKind| -> Vec<u32> {
-                edges
+                let mut seen = std::collections::HashSet::new();
+                Ok(list
                     .iter()
-                    .filter(|(_, k)| *k == kind)
-                    .map(|(d, _)| *d)
-                    .collect()
+                    .copied()
+                    .filter(|id| seen.insert(*id))
+                    .collect::<Vec<_>>()
+                    .into())
             };
 
             packages.push(Package {
                 id: pj.id,
+                catalog: pj.catalog,
                 name: intern(&pj.name),
                 version: intern(&pj.version),
                 synopsis: intern(&pj.synopsis),
@@ -176,14 +182,21 @@ impl Index {
                     .into(),
                 file,
                 line: pj.file.1,
-                inputs: ids_of(DepKind::Input).into(),
-                propagated: ids_of(DepKind::Propagated).into(),
-                native: ids_of(DepKind::Native).into(),
+                inputs: unique(&pj.inputs)?,
+                propagated: unique(&pj.propagated_inputs)?,
+                native: unique(&pj.native_inputs)?,
             });
         }
 
         let generated_ms: u64 = header.generated_ms.parse().unwrap_or(0);
-        Index::from_packages(packages, header.guix_commit.clone(), generated_ms, built_ms)
+        Index::from_parts(
+            packages,
+            header.guix_commit.clone(),
+            generated_ms,
+            built_ms,
+            doc.diagnostics,
+            header.origin.clone(),
+        )
     }
 
     /// Assemble an index from packages whose dependency lists already hold
@@ -198,13 +211,66 @@ impl Index {
         generated_ms: u64,
         built_ms: u64,
     ) -> Result<Self, IndexError> {
+        Self::from_parts(
+            packages,
+            guix_commit,
+            generated_ms,
+            built_ms,
+            Vec::new(),
+            GuixOrigin::default(),
+        )
+    }
+
+    pub(crate) fn from_parts(
+        mut packages: Vec<Package>,
+        guix_commit: String,
+        generated_ms: u64,
+        built_ms: u64,
+        mut diagnostics: Vec<IndexDiagnostic>,
+        mut origin: GuixOrigin,
+    ) -> Result<Self, IndexError> {
         let len = packages.len();
+        if len > 1_000_000 || diagnostics.len() > 1_000_000 {
+            return Err(IndexError::Limit("index entries"));
+        }
+        packages.sort_unstable_by_key(|p| p.id);
         let mut seen = vec![false; len];
         let mut names: HashMap<Arc<str>, u32> = HashMap::with_capacity(len);
         let mut dependents: Vec<Vec<u32>> = vec![Vec::new(); len];
         let mut by_module: HashMap<Arc<str>, Vec<u32>> = HashMap::new();
 
-        for p in &packages {
+        for p in &mut packages {
+            for (text, multiline) in [
+                (&mut p.name, false),
+                (&mut p.version, false),
+                (&mut p.synopsis, false),
+                (&mut p.description, true),
+                (&mut p.homepage, false),
+                (&mut p.file, false),
+            ] {
+                let cleaned = clean_text(text, multiline);
+                if cleaned.as_str() != text.as_ref() {
+                    *text = cleaned.into();
+                }
+            }
+            p.licenses = p
+                .licenses
+                .iter()
+                .map(|s| Arc::from(clean_text(s, false)))
+                .collect::<Vec<_>>()
+                .into();
+            for edges in [&mut p.inputs, &mut p.propagated, &mut p.native] {
+                if edges.len() > 100_000 {
+                    return Err(IndexError::Limit("dependencies"));
+                }
+                let mut unique = HashSet::with_capacity(edges.len());
+                *edges = edges
+                    .iter()
+                    .copied()
+                    .filter(|id| unique.insert(*id))
+                    .collect::<Vec<_>>()
+                    .into();
+            }
             let id = p.id as usize;
             if id >= len {
                 return Err(IndexError::IdOutOfRange(p.id, len));
@@ -216,7 +282,9 @@ impl Index {
             if p.name.is_empty() {
                 return Err(IndexError::EmptyName(p.id));
             }
-            names.entry(Arc::clone(&p.name)).or_insert(p.id);
+            if p.catalog {
+                names.entry(Arc::clone(&p.name)).or_insert(p.id);
+            }
             if !p.file.is_empty() {
                 by_module.entry(Arc::clone(&p.file)).or_default().push(p.id);
             }
@@ -233,6 +301,18 @@ impl Index {
             }
         }
 
+        for p in &packages {
+            names.entry(Arc::clone(&p.name)).or_insert(p.id);
+        }
+        for diagnostic in &mut diagnostics {
+            if diagnostic.package_id as usize >= len {
+                return Err(IndexError::IdOutOfRange(diagnostic.package_id, len));
+            }
+            diagnostic.kind = clean_text(&diagnostic.kind, false);
+            diagnostic.code = clean_text(&diagnostic.code, false);
+            diagnostic.message = clean_text(&diagnostic.message, false);
+        }
+
         let dependents: Vec<Arc<[u32]>> = dependents
             .into_iter()
             .map(|mut v| {
@@ -242,15 +322,51 @@ impl Index {
             })
             .collect();
 
-        Ok(Index {
+        if origin.channels.len() > 4096 {
+            return Err(IndexError::Limit("channels"));
+        }
+        for text in [&mut origin.executable, &mut origin.system] {
+            let clean = clean_text(text, false);
+            if clean != *text {
+                origin.verified = false;
+                *text = clean;
+            }
+        }
+        for channel in &mut origin.channels {
+            for text in [&mut channel.name, &mut channel.commit] {
+                let clean = clean_text(text, false);
+                if clean != *text {
+                    origin.verified = false;
+                    *text = clean;
+                }
+            }
+        }
+        origin.channels.sort();
+        origin.channels.dedup();
+        origin.verified = origin.is_verified();
+        let mut index = Index {
             packages,
             names,
             dependents,
             by_module,
-            guix_commit,
+            guix_commit: clean_text(&guix_commit, false),
             generated_ms,
             built_ms,
-        })
+            diagnostics: diagnostics.into(),
+            origin,
+            snapshot: String::new(),
+        };
+        let digest = Sha256::digest(crate::blob::encode_payload(&index));
+        index.snapshot = format!("{digest:x}");
+        Ok(index)
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.diagnostics.is_empty()
+    }
+
+    pub fn snapshot_id(&self) -> &str {
+        &self.snapshot
     }
 
     pub fn len(&self) -> usize {

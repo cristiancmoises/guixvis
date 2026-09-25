@@ -2,27 +2,30 @@
 //! progress from stderr, collects the JSON document, and emits typed events
 //! to the UI thread. Fully cancellable; the child is killed on cancel/drop.
 
-use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::Command;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::cache::{describe_commit, find_guix, Cache, CacheStatus};
+use crate::cache::{Cache, CacheStatus};
 use crate::error::IndexerError;
 use crate::index::Index;
 
 /// Embed the Guile index generator; written to a temp file at runtime.
-const INDEX_SCRIPT: &str = include_str!("../data/guix-index.scm");
+const INDEX_SCRIPT: &str = concat!(
+    include_str!("../data/guix-index-core.scm"),
+    "\n",
+    include_str!("../data/guix-index.scm")
+);
 
 /// Hard timeout for a full cold index build (Guile module compilation can
 /// take minutes on a fresh cache).
 const TIMEOUT: Duration = Duration::from_secs(900);
 /// Upper bound on the JSON document the script may emit (~20 MB observed).
-const MAX_OUTPUT: u64 = 256 * 1024 * 1024;
+const MAX_OUTPUT: usize = 256 * 1024 * 1024;
 
 pub enum IndexEvent {
     /// `PROGRESS <done> <total>` line seen on the script's stderr.
@@ -52,17 +55,32 @@ pub fn start_loader(tx: Sender<IndexEvent>, cancel: Cancel, force: bool) -> Join
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0)
             };
-            let guix = find_guix();
-            let commit = guix.as_deref().and_then(describe_commit);
+            let (guix, origin) = match crate::guix_env::current_guix().and_then(|guix| {
+                crate::guix_env::probe_origin(&guix, &cancel).map(|origin| (guix, origin))
+            }) {
+                Ok(pair) => pair,
+                Err(msg) => {
+                    let _ = tx.send(IndexEvent::Failed { msg });
+                    return;
+                }
+            };
 
             if !force {
                 if let Ok(cache) = Cache::new() {
-                    match cache.load(commit.as_deref(), now_ms()) {
+                    match cache.load(Some(&origin), now_ms()) {
                         Ok(CacheStatus::Fresh(index)) => {
                             let _ = tx.send(IndexEvent::Ready {
                                 index: Arc::new(index),
                                 fresh: true,
-                                unkeyed: commit.is_none(),
+                                unkeyed: false,
+                            });
+                            return;
+                        }
+                        Ok(CacheStatus::Unverified(index)) => {
+                            let _ = tx.send(IndexEvent::Ready {
+                                index: Arc::new(index),
+                                fresh: false,
+                                unkeyed: true,
                             });
                             return;
                         }
@@ -85,7 +103,7 @@ pub fn start_loader(tx: Sender<IndexEvent>, cancel: Cancel, force: bool) -> Join
             }
 
             // Rebuild path: run the indexer, then save the cache.
-            match build(commit.as_deref(), &cancel, &tx) {
+            match build(&guix, &origin, &cancel, &tx) {
                 Ok((doc, _raw, _)) => {
                     match Index::from_doc(doc, now_ms()) {
                         Ok(index) => {
@@ -101,7 +119,7 @@ pub fn start_loader(tx: Sender<IndexEvent>, cancel: Cancel, force: bool) -> Join
                             let _ = tx.send(IndexEvent::Ready {
                                 index: Arc::new(index),
                                 fresh: false,
-                                unkeyed: commit.is_none(),
+                                unkeyed: !origin.is_verified(),
                             });
                         }
                         Err(e) => {
@@ -122,7 +140,7 @@ pub fn start_loader(tx: Sender<IndexEvent>, cancel: Cancel, force: bool) -> Join
 }
 
 /// A private temp directory removed on drop.
-struct TempScript(PathBuf);
+pub(crate) struct TempScript(PathBuf);
 
 impl Drop for TempScript {
     fn drop(&mut self) {
@@ -133,7 +151,7 @@ impl Drop for TempScript {
 /// Write the embedded script into a fresh directory that only this user can
 /// read: the system temp directory is world-writable, so a predictable file
 /// name there is an invitation to a symlink race.
-fn write_private_script(content: &str) -> std::io::Result<(PathBuf, TempScript)> {
+pub(crate) fn write_private_script(content: &str) -> std::io::Result<(PathBuf, TempScript)> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -179,138 +197,89 @@ fn write_private_script(content: &str) -> std::io::Result<(PathBuf, TempScript)>
 /// document plus raw bytes (for the cache). Blocking; call from a worker
 /// thread. Progress lines are relayed through `progress`.
 pub fn build(
-    commit: Option<&str>,
+    guix: &std::path::Path,
+    origin: &crate::model::GuixOrigin,
     cancel: &Cancel,
     progress: &Sender<IndexEvent>,
 ) -> Result<(crate::model::IndexDoc, Vec<u8>, String), IndexerError> {
-    let started = Instant::now();
-    let guix = find_guix().ok_or_else(|| IndexerError::NotFound(guix_search_paths()))?;
-
     let (script_path, _script_guard) = write_private_script(INDEX_SCRIPT)
         .map_err(|e| IndexerError::Exited(format!("cannot write temp script: {e}")))?;
 
-    let commit = commit.unwrap_or("");
+    let commit = origin
+        .channels
+        .iter()
+        .find(|c| c.name == "guix")
+        .map(|c| c.commit.as_str())
+        .unwrap_or("");
     let generated_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0)
         .to_string();
 
-    let mut child = Command::new(&guix)
+    let mut command = Command::new(guix);
+    command
         .arg("repl")
+        .arg("-q")
         .arg("--")
         .arg(&script_path)
         .arg(commit)
-        .arg(&generated_ms)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| IndexerError::Exited(format!("cannot spawn guix: {e}")))?;
-
-    // Drain stdout on its own thread; bounded by MAX_OUTPUT.
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let stdout_reader: JoinHandle<Result<Vec<u8>, String>> = std::thread::Builder::new()
-        .name("guixvis-indexer-stdout".into())
-        .spawn(move || {
-            let mut buf = Vec::with_capacity(32 * 1024 * 1024);
-            let mut chunk = [0u8; 64 * 1024];
-            loop {
-                let n = stdout.read(&mut chunk).map_err(|e| e.to_string())?;
-                if n == 0 {
-                    break;
-                }
-                if buf.len() as u64 + n as u64 > MAX_OUTPUT {
-                    return Err("indexer output exceeded 256 MiB".into());
-                }
-                buf.extend_from_slice(&chunk[..n]);
-            }
-            Ok(buf)
-        })
-        .expect("failed to spawn stdout reader");
-
-    // Drain stderr, relaying PROGRESS lines.
-    let mut stderr = child.stderr.take().expect("stderr piped");
-    let tx_prog = progress.clone();
-    let stderr_reader: JoinHandle<()> = std::thread::Builder::new()
-        .name("guixvis-indexer-stderr".into())
-        .spawn(move || {
-            let reader = BufReader::new(&mut stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                if let Some(rest) = line.strip_prefix("PROGRESS ") {
-                    let mut parts = rest.split_whitespace();
-                    if let (Some(d), Some(t)) = (parts.next(), parts.next()) {
-                        if let (Ok(done), Ok(total)) = (d.parse::<u64>(), t.parse::<u64>()) {
-                            let _ = tx_prog.send(IndexEvent::Progress { done, total });
-                        }
-                    }
-                }
-            }
-        })
-        .expect("failed to spawn stderr reader");
-
-    // Poll for completion with a hard deadline and cancellation.
-    let deadline = started + TIMEOUT;
-    let status = loop {
-        if cancel.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err(IndexerError::Exited("cancelled".into()));
+        .arg(&generated_ms);
+    let mut last_progress = std::time::Instant::now() - Duration::from_secs(1);
+    let raw = crate::process::capture(&mut command, cancel, TIMEOUT, MAX_OUTPUT, |line| {
+        if last_progress.elapsed() < Duration::from_millis(50) {
+            return;
         }
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
-                    return Err(IndexerError::Timeout(TIMEOUT.as_secs()));
+        if let Some(rest) = line.strip_prefix("PROGRESS ") {
+            let mut parts = rest.split_whitespace();
+            if let (Some(d), Some(t)) = (parts.next(), parts.next()) {
+                if let (Ok(done), Ok(total)) = (d.parse::<u64>(), t.parse::<u64>()) {
+                    let _ = progress.send(IndexEvent::Progress { done, total });
+                    last_progress = std::time::Instant::now();
                 }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => {
-                return Err(IndexerError::Exited(format!("cannot wait for guix: {e}")));
             }
         }
-    };
-
-    let raw = stdout_reader
-        .join()
-        .map_err(|_| IndexerError::Exited("stdout reader panicked".into()))?
-        .map_err(IndexerError::Exited)?;
-    let _ = stderr_reader.join();
-
-    if !status.success() {
-        let tail: String = String::from_utf8_lossy(&raw)
-            .chars()
-            .rev()
-            .take(400)
-            .collect();
-        return Err(IndexerError::Exited(format!(
-            "guix repl exited with {status}; output tail: {tail}"
-        )));
-    }
+    })
+    .map_err(IndexerError::Exited)?;
     if raw.is_empty() {
         return Err(IndexerError::NoOutput);
     }
 
-    let doc: crate::model::IndexDoc = serde_json::from_slice(&raw)
+    let mut doc: crate::model::IndexDoc = serde_json::from_slice(&raw)
         .map_err(|e| IndexerError::Exited(format!("cannot parse indexer JSON: {e}")))?;
+    doc.header.origin = origin.clone();
     Ok((doc, raw, commit.to_string()))
 }
 
-fn guix_search_paths() -> String {
-    let mut parts = [
-        "$GUIX/bin/guix",
-        "/run/current-system/profile/bin/guix",
-        "~/.config/guix/current/bin/guix",
-        "~/.guix-profile/bin/guix",
-        "$PATH/guix",
-    ]
-    .join(", ");
-    parts.push_str(". Install GNU Guix or export GUIX to its profile.");
-    parts
+#[cfg(all(test, unix))]
+mod cancellation_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+
+    #[test]
+    fn cancellation_does_not_join_inherited_pipes_forever() {
+        let shell = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|p| p.join("sh"))
+            .find(|p| p.is_file())
+            .unwrap();
+        let (script, _guard) =
+            write_private_script(&format!("#!{}\nsleep 2 &\nwait\n", shell.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let cancel: Cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let stop = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        assert!(build(&script, &Default::default(), &cancel, &tx).is_err());
+        stop.join().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "cancel waited for descendant-held pipes"
+        );
+    }
 }

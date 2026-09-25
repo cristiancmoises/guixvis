@@ -4,7 +4,8 @@ Guixvis release downloads use ZUPT, not gzip tarballs. The source archive is
 named `guixvis-<version>.zupt` and contains one directory,
 `guixvis-<version>/`, exported from the exact release commit. It includes the
 lockfile, tests, Emacs library, documentation, and tracked screenshots/videos.
-It does not include `.git`, build output, local caches, or credentials.
+It does not include `.git`, build output, local caches, credentials, task
+prompts, or agent execution notes. Inspect content as well as filenames.
 
 Publish the same archive and `SHA256SUMS` on every configured forge. This is a
 source package, not a portable prebuilt executable or an offline Cargo vendor
@@ -14,12 +15,13 @@ bundle. Building it needs Rust 1.88+ and the locked crates; running it needs Gui
 
 1. Confirm the version, clean working tree, Git identity, existing remote tags,
    and authenticated account on each forge. Never move a published tag.
-2. Run the checks in the README and the [0.7.0 notes](releases/0.7.0.md):
+2. Run the checks in the README and the [0.8.0 notes](releases/0.8.0.md):
    formatting, all-target/all-feature Clippy, default and all-feature tests,
    both JavaScript suites, live Guix checks, Emacs ERT and warnings-as-errors
    byte compilation, a release build, and `cargo audit`. Exercise terminal
    navigation in a real PTY and browser interactions in isolated Chromium.
-   Review the release notes and commit any final changes.
+   Review the release notes. Install and verify the candidate locally first,
+   then wait for the owner's explicit publication approval before committing.
 3. Export the committed tree into a fresh staging directory. Use `git archive`
    with `--prefix=guixvis-<version>/`; an uncompressed tar stream can transport
    the Git tree into staging, but is not a published release package.
@@ -27,27 +29,29 @@ bundle. Building it needs Rust 1.88+ and the locked crates; running it needs Gui
    encryption:
 
    ```sh
-   zupt compress -l 9 /path/to/output/guixvis-0.7.0.zupt guixvis-0.7.0
-   zupt test /path/to/output/guixvis-0.7.0.zupt
-   zupt list /path/to/output/guixvis-0.7.0.zupt
+   zupt compress -l 9 guixvis-0.8.0.zupt guixvis-0.8.0
+   zupt test guixvis-0.8.0.zupt
+   zupt list guixvis-0.8.0.zupt
    ```
 
 5. Extract into another fresh directory with `zupt extract -o <directory>`.
    Compare paths, file contents, and executable bits against the committed
    tree. Scan the export for secrets. Stop on any unexpected file or mismatch.
 6. In the output directory, create `SHA256SUMS` with
-   `sha256sum guixvis-0.7.0.zupt > SHA256SUMS`, then run
+   `sha256sum guixvis-0.8.0.zupt > SHA256SUMS`, then run
    `sha256sum -c SHA256SUMS`.
 
 ## Native Guix installation
 
-A local native Guix installation is part of the 0.7.0 delivery. Use the
-existing Guix recipe approach, pointing only Guixvis at the exact 0.7.0 source
-commit and keeping all recipe tests enabled. A channel's current
+A local native Guix installation is part of each delivery. Use the
+existing Guix recipe approach, pointing only Guixvis at a reviewed, hashed
+snapshot of the candidate and keeping all recipe tests enabled. Keep this
+uncommitted source snapshot and its inventory outside the repository. After
+approval, verify the release commit contains those same source bytes. A channel's current
 `guix install guixvis` may still select an older packaged version; inspect
 the recipe and resolved package version before installing. Change only
 Guixvis in the existing profile, retaining the previous profile generation
-for recovery. Confirm that the `guixvis` found on `PATH` reports 0.7.0,
+for recovery. Confirm that the `guixvis` found on `PATH` reports the new version,
 that `guixvis web` serves the local browser and Emacs API, and that the
 installed Emacs library loads. Record the profile generation and results in
 the delivery report.
@@ -55,6 +59,7 @@ the delivery report.
 ## Publish and verify
 
 Create an annotated `v<version>` tag under the configured owner identity.
+Do this only after local installation and the owner's separate publication OK.
 Push the branch and tag without force to the four existing remotes. Confirm
 both the tag object and its peeled commit agree everywhere.
 

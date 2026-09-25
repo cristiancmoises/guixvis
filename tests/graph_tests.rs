@@ -7,6 +7,107 @@ use guixvis::graph::{GraphView, NODE_BUDGET};
 use common::load_fixture;
 
 #[test]
+fn projection_counts_nodes_beyond_the_drawing_budget() {
+    let index = common::chain_fixture(8);
+    let p = guixvis::graph::project(&index, 0, guixvis::graph::Dir::Deps, 7, 3);
+    assert_eq!(p.nodes.len(), 3, "budget includes root");
+    assert_eq!(p.truncated, 5, "discovery continues beyond materialization");
+    assert_eq!(p.discovered_total, Some(8));
+    assert!(p.discovery_complete);
+    assert_eq!(p.edges_total, Some(2));
+}
+
+#[test]
+fn dense_graph_reports_edge_budget_and_cancellation() {
+    use guixvis::graph::{project_cancellable, Dir, EDGE_BUDGET};
+    let count = 60u32;
+    let packages:Vec<_>=(0..count).map(|id| serde_json::json!({"id":id,"name":format!("p{id}"),"inputs":(0..count).filter(|d| *d!=id).collect::<Vec<_>>()})).collect();
+    let doc = serde_json::from_value(
+        serde_json::json!({"header":{"schema":4,"package_count":count},"packages":packages}),
+    )
+    .unwrap();
+    let index = guixvis::index::Index::from_doc(doc, 0).unwrap();
+    let p = project_cancellable(&index, 0, Dir::Deps, 1, 200, &|| false).unwrap();
+    assert_eq!(p.nodes.len(), 60);
+    assert_eq!(p.edges.len(), EDGE_BUDGET);
+    assert_eq!(p.edges_total, Some(3540));
+    assert_eq!(p.edges_truncated, 540);
+    assert!(matches!(
+        project_cancellable(&index, 0, Dir::Deps, 1, 200, &|| true),
+        Err(guixvis::relations::WalkError::Cancelled)
+    ));
+    assert!(matches!(
+        project_cancellable(&index, 999, Dir::Deps, 1, 200, &|| false),
+        Err(guixvis::relations::WalkError::InvalidRoot)
+    ));
+}
+
+#[test]
+fn graph_worker_discards_obsolete_depth_requests() {
+    let worker =
+        guixvis::graph_worker::GraphWorker::spawn(std::sync::Arc::new(common::chain_fixture(20)));
+    worker.request(0, 8);
+    let ticket = worker.request(0, 1);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let reply = loop {
+        if let Some(reply) = worker.take_reply() {
+            break reply;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert_eq!(reply.ticket, ticket);
+    assert_eq!(reply.view.depth, 1);
+    assert_eq!(reply.view.nodes, vec![0, 1]);
+    worker.cancel();
+    assert!(worker.take_reply().is_none());
+}
+
+#[test]
+fn discovery_and_edge_work_limits_report_unknown_totals_independently() {
+    use guixvis::graph::{project, Dir};
+    use guixvis::index::{Index, Package};
+    use std::sync::Arc;
+    // 199 * 10,051 outgoing relations exceed the 2M work cap. The root's
+    // first hop is small, but counting edges among its selected nodes is not.
+    let outside: Arc<[u32]> = (200..10_251).collect::<Vec<_>>().into();
+    let direct: Arc<[u32]> = (1..200).collect::<Vec<_>>().into();
+    let packages = (0..10_251)
+        .map(|id| Package {
+            id,
+            catalog: true,
+            name: format!("p{id}").into(),
+            version: "1".into(),
+            synopsis: "".into(),
+            description: "".into(),
+            homepage: "".into(),
+            licenses: vec![].into(),
+            file: "".into(),
+            line: 0,
+            inputs: if id == 0 {
+                direct.clone()
+            } else if id < 200 {
+                outside.clone()
+            } else {
+                vec![].into()
+            },
+            propagated: vec![].into(),
+            native: vec![].into(),
+        })
+        .collect();
+    let index = Index::from_packages(packages, "fixture".into(), 0, 0).unwrap();
+    let shallow = project(&index, 0, Dir::Deps, 1, 200);
+    assert_eq!(shallow.discovered_total, Some(200));
+    assert!(shallow.discovery_complete);
+    assert_eq!(shallow.edges_total, None);
+    assert_eq!(shallow.edges_truncated, 0);
+    let deep = project(&index, 0, Dir::Deps, 2, 200);
+    assert_eq!(deep.discovered_total, None);
+    assert!(!deep.discovery_complete);
+    assert_eq!(deep.nodes.len(), 200);
+}
+
+#[test]
 fn builds_expected_subgraph() {
     let index = load_fixture();
     let mut g = GraphView::new(0, 2);

@@ -10,7 +10,7 @@ each of your profiles.
 Run `guixvis` for the terminal interface or `guixvis web` for the browser at
 `http://127.0.0.1:8787`. The web server requires a build with `--features web`.
 The first run builds an index; later runs load its binary snapshot. Updating
-your Guix channel invalidates that snapshot automatically.
+the verified Guix origin invalidates that snapshot automatically.
 
 Type a name or words from a synopsis. Several words must all match. Name
 matches rank ahead of synopsis-only matches. Clear the search to browse
@@ -18,24 +18,47 @@ packages with many dependents. The terminal shows up to 500 results. The
 browser's Packages view shows up to 100, with 20 suggestions in its dropdown.
 Refine the search when the result count reaches the cap.
 
-In the terminal, `Tab` moves between overview, dependencies, reverse
-dependencies, and graph. Arrow keys work while searching. Letter shortcuts
-such as `d`, `r`, and `v` act when the search is empty. The current query stays
-visible in the bordered header, including on narrow terminals. Press `?` for
-help.
+In the terminal, `Tab` and `Shift+Tab` move between all four tabs without
+changing the Overview package. The header shows **Search** or **Navigate**.
+Overview starts in Search. Press `/` from any tab to edit its query; every
+printable character is input, including `q`, digits, and `+`. `Enter` or
+`Esc` ends editing without activating a row or losing the query. Arrow and
+page keys work in both modes. `Ctrl+U` clears the current query; `F1` opens
+help and `Ctrl+C` quits in either mode.
 
-The Overview result is the package anchor for the other tabs. Arrow keys and
-page keys in a dependency tree move that tree's cursor without changing the
-Overview result. In Graph, `Enter` follows the selected node as the new root;
-`+` and `−` adjust depth from 1 to 8. The followed root and depth remain when
-you switch tabs. Press `g` in Graph to refocus on the Overview package at the
-current depth, or select a different Overview result to start a new graph.
-At tight widths, graph labels prioritize the root and selected node.
+In Navigate, command letters work even if a filter remains: `d/r/v` and
+`1–4` choose tabs, `T` changes theme, `R` rebuilds, and `q` quits.
+`Esc` clears a local filter before returning through graph history.
+
+Dependencies and Reverse deps each have their own case-insensitive literal
+filter over names and versions. All words must match. These searches cover
+every reachable package object in the index, regardless of expanded rows or
+tree display depth. They do not search the whole catalog or replace the
+Overview query. Selecting a different Overview result resets related views.
+
+The index follows actual Guix package objects, including private variants and
+multiple versions with the same name. Inputs (`I`), propagated inputs (`P`),
+and native inputs (`N`) are included. They describe declared package relations
+for the indexed system, not an installed-store closure or derivation graph.
+Extraction diagnostics are surfaced as incomplete-index warnings.
+
+The terminal graph starts at depth 1 with focused edges. `Enter` follows a
+node; `+` and `−` change depth from 1 to 8. `g` refocuses on Overview.
+Wide terminals show both canvas and package list; narrow terminals show the
+list. Complete selected names and versions wrap below it, with `[`/`]`
+for scrolling. `e` changes edge mode and `l` toggles canvas labels.
+
+Graph search filters only projected nodes, without moving the root or rerunning
+layout. Its 200-node limit includes the root; edges are capped at 3,000.
+A separate traversal-work limit can leave totals unknown; the UI marks that
+explicitly. Dependency-tab search is not limited by the graph projection.
 
 In the browser, **Packages** keeps the results visible. Choose a row to read
 its details, then follow dependency chips or switch to **Graph**. The direction
 button switches between dependencies and dependents; `+` and `−` change depth.
-The copy-link button copies the current package, direction, and depth. Links
+The copy-link button copies the exact package ID, snapshot, direction, and depth.
+IDs are scoped to a snapshot. If it has changed, search again: the client does
+not silently substitute a same-name package. Legacy name-only links still work. Links
 refer to your local service; another person needs Guixvis running to open one.
 
 Click a graph node to follow it. Right-click the canvas or press the visible
@@ -48,7 +71,9 @@ Reloading or editing the address creates a new in-app Back boundary.
 **Graph style** offers labeled **Bubbles** and **Rectangles**; the selection is
 saved in this browser. Bubble labels prioritize the root, selection, and
 high-degree nodes that fit. Rectangles show names inside the shapes, shortening
-long names. Hover a node for its tooltip, or focus the canvas and use arrow
+long names. Labels are measured and drawn at the same font size, avoiding
+compressed letters at normal browser zoom. Hover a node for its tooltip,
+or focus the canvas and use arrow
 keys to select a node, then `Enter` to follow it. Drag a node with the primary
 mouse button; drag the background to pan. The wheel zooms, and a two-finger
 pinch zooms on a touch screen. Those gestures do not follow a node. On touch,
@@ -60,13 +85,16 @@ button remains available without a mouse.
 The browser detail pane has previews and copy buttons for four commands:
 
 ```sh
-guix install -- 'emacs'
-guix remove -- 'emacs'
-guix show -- 'emacs'
-guix shell 'emacs'
+guix install -- 'emacs@30.2'
+guix remove -- 'emacs@30.2'
+guix show -- 'emacs@30.2'
+guix shell 'emacs@30.2'
 ```
 
-Review the command in your own terminal before running it. Installation and
+The version above is an example; previews use the selected package's version.
+Private variants and ambiguous name/version pairs carry a warning: a shell
+specification may not reproduce that exact object. Review the command in your
+own terminal before running it. Installation and
 removal affect the Guix profile selected by your shell environment. Guixvis
 does not execute these commands and does not request elevated privileges.
 The `guix shell` command starts an environment containing the package; `--`
@@ -79,8 +107,8 @@ selects the visible command so you can copy it manually.
 
 ## Themes
 
-The terminal starts with its saved palette or `dark`. Press `T` to cycle and
-save a choice. `guixvis --theme nord` overrides that choice for one run; cycling
+The terminal starts with its saved palette or `dark`. In Navigate mode,
+press `T` to cycle and save a choice. `guixvis --theme nord` overrides that choice for one run; cycling
 with `T` still saves the newly selected palette. The preference lives in
 `$XDG_CONFIG_HOME/guixvis/theme`, falling back to `~/.config/guixvis/theme`.
 Missing or invalid preferences use `dark`; an unwritable configuration
@@ -127,6 +155,11 @@ elsewhere it uses the current package. `/` also starts a search from the
 results buffer. Results can be sorted using the table headers, including numeric
 dependency counts. Native buffers inherit your Emacs theme.
 
+Search rows and related-package buttons retain exact IDs and snapshot tokens.
+Refresh never replaces an expired reference with another same-name variant.
+A stale snapshot clears the old details and asks you to search again. Details
+also show the selected Guix origin and whether it could be verified.
+
 Settings are available through `M-x customize-group RET guixvis`:
 
 | Setting | Default | Purpose |
@@ -146,6 +179,24 @@ the running TUI before launching it with different arguments. A prefix argument
 prompts for extra arguments and supports quoted values. `M-x guixvis-web`
 opens the website. If you use Emacs-Guix, `(guixvis-popup-install)` adds the
 existing `v` and `V` launcher entries to its popup.
+
+## Local API and cache
+
+Search rows, details, and graph nodes expose `id` and `snapshot`. For an exact
+request, send both query parameters to `/api/v1/package/<name>` or
+`/api/v1/graph/<name>`. Names remain readable labels; they are not unique IDs.
+Name-only requests are retained for compatibility.
+
+The API returns JSON errors: 400 for malformed references, 404 for a missing
+ID, 409 for an expired snapshot, and 503 while no index is available.
+Responses include completeness and diagnostic counts; health also reports
+origin verification. A snapshot token survives a cache reload but changes
+when the indexed content or origin changes.
+
+The v5 cache preserves the old v4 file and rebuilds on first use. Guix selection
+is `GUIX`, then `PATH`, then standard profile locations. The selected launcher,
+system, and every channel commit form its origin. Mutable `GUIX_PACKAGE_PATH`
+modules or failed origin probes are shown as unverified, not assumed fresh.
 
 ## When something looks wrong
 

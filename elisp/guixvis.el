@@ -3,7 +3,7 @@
 ;; Copyright © 2026 Cristian Cezar Moisés <cristiancmoises@users.noreply.github.com>
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
-;; Version: 0.6.0
+;; Version: 0.8.0
 ;; Package-Requires: ((emacs "27.1"))
 
 ;;; Commentary:
@@ -78,12 +78,33 @@ Credentials, paths, queries, and fragments are not accepted."
 
 (defvar-local guixvis--query "")
 (defvar-local guixvis--package-name nil)
+(defvar-local guixvis--package-id nil)
+(defvar-local guixvis--snapshot nil)
+(defvar-local guixvis--package-data nil)
+(defvar-local guixvis--search-items nil)
 (defvar-local guixvis--request-generation 0)
 (defvar-local guixvis--pending-request nil)
 
 (cl-defstruct (guixvis--request-state
                (:constructor guixvis--make-request-state))
   buffer timer done success failure)
+
+(define-error 'guixvis-stale-index "Package index changed; press s to search again")
+
+(defun guixvis--package-path (name id snapshot)
+  "Return the API path for NAME, optionally exact ID and SNAPSHOT.
+Reject partial identities; zero is a valid package ID."
+  (unless (guixvis--valid-package-name-p name)
+    (user-error "Invalid Guix package name"))
+  (let ((path (concat "package/" (url-hexify-string name)))
+        (case-fold-search nil))
+    (cond
+     ((and (null id) (null snapshot)) path)
+     ((not (and (integerp id) (<= 0 id #xffffffff)
+                (stringp snapshot)
+                (string-match-p "\\`[0-9a-f]\\{64\\}\\'" snapshot)))
+      (user-error "Invalid package reference; search again"))
+     (t (format "%s?id=%d&snapshot=%s" path id snapshot)))))
 
 (defun guixvis--base-url ()
   "Return the validated service URL without a trailing slash."
@@ -141,6 +162,8 @@ When SINGLE-LINE is non-nil, replace newlines and tabs with spaces."
 (defun guixvis--response-data (status)
   "Read the JSON response in the current URL buffer, checking STATUS."
   (cond
+   ((eq url-http-response-status 409)
+    (signal 'guixvis-stale-index nil))
    ((and (integerp url-http-response-status)
          (= url-http-response-status 503))
     (error "The package index is still building; wait a moment and press g"))
@@ -190,7 +213,9 @@ Requests bypass proxies, omit cookies, and do not follow redirects."
                         (condition-case response-error
                             (funcall success (guixvis--response-data status))
                           (error (funcall failure
-                                          (error-message-string response-error))))
+                                          (propertize (error-message-string response-error)
+                                                      'guixvis-stale
+                                                      (eq (car response-error) 'guixvis-stale-index)))))
                       (kill-buffer (current-buffer)))))
                 nil t t)))
           (unless (or buffer (guixvis--request-state-done request))
@@ -215,6 +240,13 @@ Requests bypass proxies, omit cookies, and do not follow redirects."
 
 (defun guixvis--show-error (text)
   "Show TEXT in the current native buffer and the echo area."
+  (when (derived-mode-p 'guixvis-package-mode)
+    (setq guixvis--package-data nil)
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert text "\n"))
+    (when (get-text-property 0 'guixvis-stale text)
+      (setq guixvis--package-name nil guixvis--package-id nil guixvis--snapshot nil)))
   (setq header-line-format (propertize text 'face 'error)
         mode-line-process " [error]")
   (message "Guixvis: %s" text))
@@ -312,12 +344,15 @@ RET shows details, s searches, g refreshes, and w copies a Guix command."
 (defun guixvis--search-entry (item)
   "Validate a search ITEM and turn it into a table entry."
   (let ((name (alist-get 'name item))
+        (id (alist-get 'id item))
+        (snapshot (alist-get 'snapshot item))
         (deps (alist-get 'deps item))
         (dependents (alist-get 'dependents item)))
     (unless (and (guixvis--valid-package-name-p name)
                  (natnump deps) (natnump dependents))
       (error "Invalid package entry from the local service"))
-    (list name (vector name
+    (guixvis--package-path name id snapshot)
+    (list (if id (cons snapshot id) name) (vector name
                        (guixvis--clean-text (alist-get 'version item) t)
                        (number-to-string deps)
                        (number-to-string dependents)
@@ -329,7 +364,9 @@ RET shows details, s searches, g refreshes, and w copies a Guix command."
                (listp (alist-get 'items data)))
     (error "Invalid search response from the local service"))
   (let ((entries (mapcar #'guixvis--search-entry (alist-get 'items data))))
-    (setq tabulated-list-entries entries)
+    (setq tabulated-list-entries entries
+          guixvis--search-items (cl-mapcar #'cons (mapcar #'car entries)
+                                         (alist-get 'items data)))
     (tabulated-list-print t)
     (tabulated-list-init-header)
     (setq mode-line-process
@@ -363,6 +400,7 @@ Start \"guixvis web\" first.  An empty query lists packages up to
     (unless (derived-mode-p 'guixvis-search-mode)
       (guixvis-search-mode))
     (setq guixvis--query query
+          guixvis--search-items nil
           tabulated-list-entries nil)
     (tabulated-list-print)
     (guixvis--refresh-search)))
@@ -396,23 +434,35 @@ TAB moves between dependencies, RET follows a link, and w copies a command."
       (insert "  None\n")
     (dolist (package packages)
       (let ((name (alist-get 'name package))
-            (kind (alist-get 'kind package)))
+            (kinds (or (alist-get 'kinds package)
+                       (and (alist-get 'kind package) (list (alist-get 'kind package))))))
         (unless (guixvis--valid-package-name-p name)
           (error "Invalid dependency name from the local service"))
         (insert "  ")
+        (guixvis--package-path name (alist-get 'id package) (alist-get 'snapshot package))
         (insert-text-button
-         name 'follow-link t 'guixvis-package name
+         name 'follow-link t 'guixvis-package name 'guixvis-ref package
          'action (lambda (button)
-                   (guixvis-package (button-get button 'guixvis-package))))
-        (when kind
-          (insert "  (" (guixvis--clean-text kind t) ")"))
+                   (guixvis--open-ref (button-get button 'guixvis-ref))))
+        (when (alist-get 'id package)
+          (insert (format "  %s · ID %d" (guixvis--clean-text (or (alist-get 'version package) "") t)
+                          (alist-get 'id package))))
+        (when kinds
+          (insert "  (" (mapconcat (lambda (kind) (guixvis--clean-text kind t)) kinds ", ") ")"))
         (insert "\n")))))
 
 (defun guixvis--render-package (data)
   "Display package response DATA in the current buffer."
   (unless (and (listp data)
-               (equal (alist-get 'name data) guixvis--package-name))
-    (error "Unexpected package response from the local service"))
+               (equal (alist-get 'name data) guixvis--package-name)
+               (or (null guixvis--package-id)
+                   (and (equal (alist-get 'id data) guixvis--package-id)
+                        (equal (alist-get 'snapshot data) guixvis--snapshot))))
+    (error "Unexpected package identity; press s to search again"))
+  (guixvis--package-path guixvis--package-name (alist-get 'id data) (alist-get 'snapshot data))
+  (setq guixvis--package-id (alist-get 'id data)
+        guixvis--snapshot (alist-get 'snapshot data)
+        guixvis--package-data data)
   (let ((inhibit-read-only t))
     (erase-buffer)
     (insert (propertize guixvis--package-name 'face 'bold) "  "
@@ -427,6 +477,21 @@ TAB moves between dependencies, RET follows a link, and w copies a command."
     (when (natnump (alist-get 'line data))
       (insert (format ":%d" (alist-get 'line data))))
     (insert "\n")
+    (when-let* ((origin (alist-get 'origin data)))
+      (insert (format "Guix origin %s · %s\nGuix: %s\n"
+                      (if (alist-get 'verified origin) "verified" "unverified")
+                      (guixvis--clean-text (or (alist-get 'system origin) "unknown system") t)
+                      (guixvis--clean-text (or (alist-get 'executable origin) "unknown executable") t)))
+      (dolist (channel (alist-get 'channels origin))
+        (insert (guixvis--clean-text (alist-get 'name channel) t) "@"
+                (guixvis--clean-text (alist-get 'commit channel) t) "\n")))
+    (when guixvis--package-id
+      (insert (format "ID: %d · %s\n" guixvis--package-id
+                      (if (alist-get 'catalog data) "catalog" "private dependency"))))
+    (when (and (assq 'command_safe data) (not (alist-get 'command_safe data)))
+      (insert "Private or ambiguous variant: a copied name/version command may select a different package.\n"))
+    (when (and (assq 'complete data) (not (alist-get 'complete data)))
+      (insert (format "Incomplete index: %s extraction diagnostics.\n" (alist-get 'diagnostics_count data))))
     (guixvis--insert-package-links "Dependencies" (alist-get 'deps data))
     (guixvis--insert-package-links "Dependents" (alist-get 'dependents data))
     (guixvis--insert-package-links "Same module" (alist-get 'module_neighbors data))
@@ -439,21 +504,31 @@ TAB moves between dependencies, RET follows a link, and w copies a command."
   "Refresh the package shown in the current details buffer."
   (unless (guixvis--valid-package-name-p guixvis--package-name)
     (user-error "No package selected"))
-  (guixvis--fetch (concat "package/" (url-hexify-string guixvis--package-name))
+  (guixvis--fetch (guixvis--package-path guixvis--package-name guixvis--package-id guixvis--snapshot)
                  #'guixvis--render-package))
 
 ;;;###autoload
 (defun guixvis-package (name)
   "Show details for the Guix package NAME asynchronously."
   (interactive (list (read-string "Guix package: " (guixvis--name-at-point))))
-  (unless (guixvis--valid-package-name-p name)
-    (user-error "Invalid Guix package name"))
+  (guixvis--open-package name nil nil))
+
+(defun guixvis--open-ref (ref)
+  "Open REF without losing its snapshot or object ID."
+  (if (or (alist-get 'id ref) (alist-get 'snapshot ref))
+      (guixvis--open-package (alist-get 'name ref) (alist-get 'id ref) (alist-get 'snapshot ref))
+    (guixvis-package (alist-get 'name ref))))
+
+(defun guixvis--open-package (name id snapshot)
+  "Open NAME with optional exact ID and SNAPSHOT in the details buffer."
+  (guixvis--package-path name id snapshot)
   (guixvis--base-url)
   (let ((buffer (get-buffer-create "*Guixvis package*")))
     (pop-to-buffer buffer)
     (unless (derived-mode-p 'guixvis-package-mode)
       (guixvis-package-mode))
-    (setq guixvis--package-name name)
+    (setq guixvis--package-name name guixvis--package-id id guixvis--snapshot snapshot
+          guixvis--package-data nil)
     (let ((inhibit-read-only t))
       (erase-buffer)
       (insert "Loading " name "…\n"))
@@ -461,27 +536,39 @@ TAB moves between dependencies, RET follows a link, and w copies a command."
 
 (defun guixvis--name-at-point ()
   "Return the package selected at point, or nil."
-  (or (and (derived-mode-p 'guixvis-search-mode) (tabulated-list-get-id))
+  (alist-get 'name (guixvis--ref-at-point)))
+
+(defun guixvis--ref-at-point ()
+  "Return the complete package reference selected at point, or nil."
+  (or (and (derived-mode-p 'guixvis-search-mode)
+           (cdr (assoc (tabulated-list-get-id) guixvis--search-items)))
       (let ((button (button-at (point))))
-        (and button (button-get button 'guixvis-package)))
-      guixvis--package-name))
+        (and button (button-get button 'guixvis-ref)))
+      guixvis--package-data
+      (and guixvis--package-name
+           `((name . ,guixvis--package-name) (id . ,guixvis--package-id)
+             (snapshot . ,guixvis--snapshot)))))
 
 (defun guixvis-package-at-point ()
   "Open details for the package at point."
   (interactive)
-  (let ((name (guixvis--name-at-point)))
-    (unless name (user-error "Move to a package row first"))
-    (guixvis-package name)))
+  (let ((ref (guixvis--ref-at-point)))
+    (unless ref (user-error "Move to a package row first"))
+    (guixvis--open-ref ref)))
 
-(defun guixvis--command (action name)
-  "Return a safely quoted Guix ACTION for package NAME."
+(defun guixvis--command (action name &optional version)
+  "Return a safely quoted Guix ACTION for package NAME and optional VERSION."
   (unless (member action '("install" "remove" "show" "shell"))
     (user-error "Choose install, remove, show, or shell"))
   (unless (guixvis--valid-package-name-p name)
     (user-error "Invalid Guix package name"))
   ;; Names cannot contain quotes or begin with an option.  Single quotes
   ;; prevent shell expansion; `guix shell' reserves -- for its command.
-  (format "guix %s %s'%s'" action (if (equal action "shell") "" "-- ") name))
+  (when (and version (not (and (stringp version)
+                               (string-match-p "\\`[A-Za-z0-9+._:~-]+\\'" version))))
+    (user-error "Invalid Guix package version"))
+  (format "guix %s %s'%s'" action (if (equal action "shell") "" "-- ")
+          (if version (concat name "@" version) name)))
 
 ;;;###autoload
 (defun guixvis-copy-command (action)
@@ -490,11 +577,15 @@ Choose install, remove, show, or shell.  This never executes the command."
   (interactive (list (completing-read "Copy Guix command: "
                                      '("install" "remove" "show" "shell")
                                      nil t nil nil "install")))
-  (let ((name (guixvis--name-at-point)))
+  (let* ((ref (guixvis--ref-at-point))
+         (name (alist-get 'name ref)))
     (unless name (user-error "No package selected"))
-    (let ((command (guixvis--command action name)))
+    (let ((command (guixvis--command action name (alist-get 'version ref))))
       (kill-new command)
-      (message "Copied; review before running: %s" command))))
+      (message "%s: %s"
+               (if (and (alist-get 'id ref) (not (alist-get 'command_safe ref)))
+                   "Copied name/version only, not guaranteed to select this variant; review before running"
+                 "Copied; review before running") command))))
 
 (defvar guixvis-popup-installed nil
   "Non-nil once the guixvis entries were added to the `guix' popup.")

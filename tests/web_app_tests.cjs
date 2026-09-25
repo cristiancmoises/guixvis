@@ -25,6 +25,7 @@ class Element {
   append(...children) { this.children.push(...children); }
   appendChild(child) { this.append(child); }
   replaceChildren(...children) { this.children = children; }
+  set innerHTML(value) { if (value === "") this.children = []; }
   contains() { return false; }
   querySelector() { return null; }
   querySelectorAll() { return []; }
@@ -99,7 +100,7 @@ async function app({ hash = "#/p/emacs?depth=2&dir=deps", storage = new Map() } 
     listeners.get("hashchange")({});
     await flush();
   };
-  return { ...sandbox.__guixvis, element, requests, history, location, storage, respond, finishTravel,
+  return { ...sandbox.__guixvis, element, requests, history, location, storage, respond, finishTravel, flush,
     get backCalls() { return backCalls; }, get entries() { return entries; },
     foreignHash: (hash) => { history.pushState(null, "", hash); listeners.get("hashchange")({}); } };
 }
@@ -119,6 +120,105 @@ test("Back is bounded at initial deep links and does not duplicate loading or lo
   a.graph.onPick("child");
   assert.equal(a.entries.length, 3);
   assert.equal(a.requests.length, 4);
+});
+
+const snapshot = "a".repeat(64);
+async function respondExact(a, id, { status = 200, wrongId = false } = {}) {
+  for (const r of a.requests.filter((r) => !r.done && new URLSearchParams(r.url.split("?")[1]).get("id") === String(id))) {
+    r.done = true;
+    const name = decodeURIComponent(r.url.split("?")[0].split("/").pop());
+    const params = new URLSearchParams(r.url.split("?")[1]);
+    const ref = { id: wrongId ? id + 10 : id, name, snapshot, version: "1", catalog: id === 0 };
+    const body = r.url.includes("/graph/")
+      ? { root: name, root_id: ref.id, snapshot, generation: 1, dir: params.get("dir"), depth: Number(params.get("depth")),
+        truncated: 0, nodes: [{ ...ref, degree: 1, depth: 0 },
+          { ...ref, id: id === 0 ? 1 : 0, degree: 1, depth: 1 }], edges: [] }
+      : { ...ref, generation: 1, command_safe: false,
+        origin: { system: "x86_64-linux", executable: "/fixture/bin/guix", channels: [{ name: "guix", commit: snapshot }], verified: false },
+        deps: [{ ...ref, id: id === 0 ? 1 : 0 }],
+        dependents: [], module_neighbors: [], dependents_count: 0 };
+    r.resolve({ ok: status === 200, status, json: async () => status === 200 ? body : { error: "Snapshot changed. Search again." } });
+  }
+  await a.flush();
+}
+
+test("exact hash, zero ID, node clicks, controls and history retain identity", async () => {
+  const a = await app({ hash: `#/p/same?id=0&snapshot=${snapshot}` });
+  assert.ok(a.requests.every((r) => r.url.includes(`id=0&snapshot=${snapshot}`)));
+  await respondExact(a, 0);
+  assert.equal(a.graph.rootName, 0);
+  assert.ok(a.els.detail.children.some((e) => /origin unverified/.test(e.textContent)));
+  a.graph.onPick(1);
+  await respondExact(a, 1);
+  assert.equal(a.state.detail.id, 1);
+  a.element("depth-plus").emit("click");
+  await respondExact(a, 1);
+  a.element("dir-btn").emit("click");
+  await respondExact(a, 1);
+  assert.equal(new URLSearchParams(a.location.hash.split("?")[1]).get("id"), "1");
+  a.graph.onBack();
+  await a.finishTravel();
+  await respondExact(a, 1);
+  assert.equal(a.state.dir, "deps");
+  a.element("graph").emit("keydown", { key: "ArrowRight" });
+  a.element("graph").emit("keydown", { key: "ArrowRight" });
+  assert.equal(a.graph.selected, 0);
+  a.element("graph").emit("keydown", { key: "Enter" });
+  await respondExact(a, 0);
+  assert.equal(a.state.detail.id, 0);
+});
+
+test("stale or mismatched exact responses never fall back to a name", async () => {
+  for (const options of [{ status: 409 }, { wrongId: true }]) {
+    const a = await app({ hash: `#/p/same?id=0&snapshot=${snapshot}` });
+    await respondExact(a, 0, options);
+    assert.equal(a.state.detail, null);
+    assert.equal(a.graph.engine, null);
+    assert.equal(a.requests.length, 2, "no name retry");
+    assert.match(a.els.status.textContent, /search|select/i);
+  }
+});
+
+test("malformed exact hashes show an error without resolving the name", async () => {
+  for (const suffix of ["id=0", `snapshot=${snapshot}`, `id=-1&snapshot=${snapshot}`, "id=0&snapshot=bad"]) {
+    const a = await app({ hash: `#/p/same?${suffix}` });
+    assert.equal(a.requests.length, 0);
+    assert.match(a.els.status.textContent, /invalid|search/i);
+  }
+});
+
+test("search chooses the second same-name variant by ID", async () => {
+  const a = await app();
+  await a.respond("emacs");
+  a.element("view-btn").emit("click");
+  const r = a.requests.find((r) => r.url.includes("/search?"));
+  r.resolve({ ok: true, json: async () => ({ snapshot, items: [0, 1].map((id) => ({
+    name: "same", id, snapshot, version: "1", deps: 0, dependents: 0,
+  })) }) });
+  await a.flush();
+  a.els.packageList.children[1].children[0].emit("click");
+  assert.ok(a.requests.slice(-2).every((r) => r.url.includes(`id=1&snapshot=${snapshot}`)));
+  await respondExact(a, 1);
+  assert.equal(a.state.detail.id, 1);
+});
+
+test("graph limit notices are reset between visits and distinguish unknown edges", async () => {
+  const a = await app();
+  const finish = async (name, limits) => {
+    const request = a.requests.find((r) => !r.done && r.url.includes(`/graph/${name}?`));
+    request.done = true;
+    request.resolve({ ok: true, json: async () => ({ root: name, generation: 1, dir: "deps",
+      nodes: [{ name, degree: 1, depth: 0 }], edges: [], ...limits }) });
+    await a.respond(name);
+  };
+  await finish("emacs", { truncated: 17 });
+  a.graph.onPick("child");
+  await finish("child", { truncated: 0, edges_truncated: 20 });
+  assert.doesNotMatch(a.els.pill.textContent, /17/);
+  a.graph.onPick("next");
+  await finish("next", { truncated: 0, edges_truncated: 0, edges_total: null, discovery_complete: true });
+  assert.equal(a.els.pill.hidden, false);
+  assert.match(a.els.pill.textContent, /unknown|limited/i);
 });
 
 test("Back restores package depth direction, guards pending travel, and preserves native Forward", async () => {

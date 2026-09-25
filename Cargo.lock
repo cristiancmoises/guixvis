@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "guixvis"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -669,10 +669,12 @@ dependencies = [
  "dirs",
  "flate2",
  "http-body-util",
+ "nix",
  "nucleo-matcher",
  "ratatui",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
  "tokio",
  "tower",

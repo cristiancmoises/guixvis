@@ -7,24 +7,12 @@ pacvis do Arch: pesquise **qualquer** pacote, veja tudo que está
 100% pelo teclado.
 
 [English](README.md) · [Guia de uso](docs/usage.md) ·
-[Mudanças na versão 0.7.0](docs/releases/0.7.0.md) · [Segurança](SECURITY.md)
+[Mudanças na versão 0.8.0](docs/releases/0.8.0.md) · [Segurança](SECURITY.md)
 
-A versão 0.7.0 mantém o pacote selecionado enquanto você percorre as árvores
-no terminal, preserva a raiz e a profundidade do grafo seguido e acrescenta
-uma navegação Voltar segura e dois estilos de grafo persistentes no navegador.
-
-```
-┌─ Busca: emac▌────────────────────────────────────────────────┐
-│  [Visão geral(1)] [Dependências(2)] [Deps reversas(3)] [Grafo(4)] │
-│ ┌───────────────────────────┐ ┌──────────────────────────────┐│
-│ │ ▶ emacs  30.2  GPL 3+     │ │ GNU Emacs é um editor…        ││
-│ │   emacs-minimal  30.2     │ │                              ││
-│ │   emacs-next  31.0        │ │ Home: gnu.org/software/emacs  ││
-│ │   (destaques do fuzzy)    │ │ Arq.: gnu/packages/emacs.scm:591│
-│ └───────────────────────────┘ └──────────────────────────────┘│
-│ 157 resultados · 32500 pacotes · cache atualizado (e343ff0)   │
-└───────────────────────────────────────────────────────────────┘
-```
+A versão 0.8.0 mantém o pacote selecionado ao trocar de aba, pesquisa todas as
+dependências e dependências reversas alcançáveis e abre o grafo do terminal
+com um único nível. Versões diferentes e variantes privadas do Guix continuam
+distintas no terminal, no navegador e no Emacs.
 
 ## Uma nota do autor
 
@@ -38,36 +26,25 @@ mudar o que não te agradar.
 
 ## Recursos
 
-- **Pesquise qualquer coisa** — busca fuzzy em todos os pacotes
-  (nome + sinopse), com destaques, termos combinados e prioridade para
-  correspondências no nome do pacote.
-- **Detalhes do pacote** — versão, descrição, licenças, homepage e a
-  localização do código-fonte (`gnu/packages/emacs.scm:591`).
-- **Dependências** — árvore expansível de inputs (`P` propagado, `N` nativo),
-  com contagem de dependentes em cada nó (`⤴ 12`).
-- **Dependências reversas** — "quem depende deste pacote": lista direta e
-  uma seção transitiva com limite de profundidade.
-- **Grafo de dependências** — layout dirigido por forças (Fruchterman–
-  Reingold determinístico); siga nós com Enter, mantenha a profundidade ao
-  trocar de aba e pressione `g` para voltar ao pacote da Visão geral.
-- **Inicialização instantânea depois da primeira vez** — o índice fica em
-  cache binário e é reconstruído automaticamente quando o commit do seu
-  canal Guix muda.
-- **Zero configuração** — funciona em qualquer sistema GNU Guix; a primeira
-  execução constrói o índice em segundo plano com progresso ao vivo.
-- **Comandos do pacote** — veja e copie comandos de instalação, remoção,
-  consulta e `guix shell` no navegador ou no Emacs. Você decide quando
-  executá-los; navegar pelos pacotes não altera seu perfil.
+- Busca global por nome e sinopse, com ranking fuzzy e vários termos.
+- Detalhes do pacote, licenças, página e localização no código do Guix.
+- Árvores de dependências e dependências reversas, com filtros locais por
+  nome e versão sobre todos os objetos alcançáveis.
+- Inputs comuns (`I`), propagados (`P`) e nativos (`N`), sem juntar
+  variantes só porque têm o mesmo nome.
+- Grafo com profundidade inicial 1, arestas focadas, lista navegável e detalhes
+  completos do pacote selecionado.
+- Cache binário com origem identificada: executável do Guix, sistema e commits
+  de todos os canais.
+- Comandos do Guix para revisar e copiar. Navegar não instala nem remove nada.
 
 ## Capturas de tela
 
-Busca e detalhes do pacote no terminal:
+Capturas da versão 0.8.0 instalada localmente, usando o índice real do Guix.
 
-![Guixvis 0.7: Visão geral no terminal com busca e detalhes do pacote](assets/guixvis-tui-overview-0.7.png)
+![Guixvis 0.8: busca no terminal com versões distintas do Emacs](assets/guixvis-tui-overview-0.8.0.png)
 
-Grafo de dependências no terminal:
-
-![Guixvis 0.7: grafo no terminal com rótulos de pacotes](assets/guixvis-tui-graph-0.7.png)
+![Guixvis 0.8: grafo de um nível ao lado da lista de pacotes](assets/guixvis-tui-graph-0.8.0.png)
 
 ## Interface web
 
@@ -75,8 +52,10 @@ O `guixvis web` serve o mesmo explorador como um site local em
 <http://127.0.0.1:8787>: busca fuzzy no topo, painel de detalhes com chips
 clicáveis de pacotes relacionados e o grafo interativo em que cada bolha é
 um pacote — clique em uma para abrir a visão dela. Links diretos
-(`#/p/emacs?depth=2&dir=reverse`) são compartilháveis e funcionam com o
-botão voltar do navegador. Clique com o botão direito no grafo ou use o botão
+incluem ID do pacote e token do snapshot para não misturar variantes de mesmo
+nome. Links antigos só com nome continuam funcionando; referências exatas de
+um snapshot substituído pedem uma nova busca. São links para o serviço local.
+Clique com o botão direito no grafo ou use o botão
 **Back** visível para voltar um passo no guixvis, restaurando pacote,
 profundidade e direção. Na primeira visão interna, o botão fica desativado
 e não sai do site. O layout se adapta a celulares.
@@ -95,11 +74,11 @@ inspecioná-lo. Arraste com o botão principal para mover um nó, arraste o fund
 para deslocar o grafo, use a roda para ampliar ou faça pinça na tela sensível
 ao toque. Esses gestos não abrem outro pacote.
 
-![Guixvis 0.7: grafo web com bolhas rotuladas](assets/guixvis-web-bubbles-0.7.png)
+![Guixvis 0.8: grafo web com bolhas](assets/guixvis-web-bubbles-0.8.0.png)
 
-![Guixvis 0.7: grafo web com retângulos rotulados](assets/guixvis-web-rectangles-0.7.png)
+![Guixvis 0.8: retângulos com zoom do navegador em 100%](assets/guixvis-web-rectangles-0.8.0.png)
 
-![Guixvis 0.7: interface web responsiva em tela estreita](assets/guixvis-web-mobile-0.7.png)
+![Guixvis 0.8: dependências do Python em tela estreita](assets/guixvis-web-mobile-0.8.0.png)
 
 ## Temas
 
@@ -108,7 +87,7 @@ As duas interfaces trazem nove temas de cores: **dark** (padrão da TUI), **one*
 **catppuccin-mocha** e **tron** — este último é preto puro com bolhas neon, que
 é o que você quer num painel OLED de madrugada.
 
-- TUI: pressione `T` para alternar (o tema ativo aparece na barra de
+- TUI: no modo Navigate, pressione `T` para alternar (o tema ativo aparece na barra de
   status). A escolha fica em `$XDG_CONFIG_HOME/guixvis/theme`, normalmente
   `~/.config/guixvis/theme`. Use `guixvis --theme nord` para mudar só nesta
   execução. `NO_COLOR` é respeitado com um tema em tons de cinza.
@@ -161,19 +140,19 @@ Os fontes publicados em cada forja saem como `guixvis-<versão>.zupt`, um arquiv
 [zupt](https://git.securityops.com.br/cristiancmoises/zupt) gerado no nível
 máximo de compressão e **sem senha**, então qualquer pessoa consegue abrir.
 Depois da publicação, baixe o arquivo e `SHA256SUMS` na
-[release 0.7.0](https://codeberg.org/berkeley/guixvis/releases/tag/v0.7.0):
+[release 0.8.0](https://codeberg.org/berkeley/guixvis/releases/tag/v0.8.0):
 
 ```sh
 sha256sum -c SHA256SUMS
-zupt test    guixvis-0.7.0.zupt    # verifica a integridade do arquivo
-zupt list    guixvis-0.7.0.zupt    # confira os caminhos antes de extrair
-zupt extract guixvis-0.7.0.zupt    # cria ./guixvis-0.7.0/
+zupt test    guixvis-0.8.0.zupt    # verifica a integridade do arquivo
+zupt list    guixvis-0.8.0.zupt    # confira os caminhos antes de extrair
+zupt extract guixvis-0.8.0.zupt    # cria ./guixvis-0.8.0/
 ```
 
 Depois é compilar normalmente:
 
 ```sh
-cd guixvis-0.7.0
+cd guixvis-0.8.0
 cargo build --locked --release --features web
 ```
 
@@ -221,123 +200,107 @@ guixvis --help       todas as opções
 
 ### Teclas
 
+O cabeçalho informa se você está no modo **Search** (pesquisa) ou **Navigate**
+(navegação). A Visão geral começa em Search. Pressione `/` em qualquer aba
+para pesquisar; nesse modo, todos os caracteres imprimíveis entram na busca,
+inclusive letras de atalhos e números. `Enter` ou `Esc` encerra a edição
+sem abrir um pacote nem apagar o texto.
+
 | Tecla | Ação |
 |---|---|
-| digite | busca fuzzy (sempre ativa) |
-| `Esc` | limpar busca / voltar |
-| `Tab` / `Shift+Tab` | alternar abas |
-| `1`–`4` | ir para a aba (Visão geral, Dependências, Deps reversas, Grafo) |
-| `↑` `↓` (ou `j` `k` com busca vazia) | mover o cursor da aba atual |
-| `PgUp` / `PgDn` | paginar a lista ou árvore atual |
-| `Enter` | expandir/recolher linha da árvore · seguir nó do grafo |
-| `d` / `r` / `v` (busca vazia) | abrir dependências / deps reversas / grafo |
-| `h` / `l` ou `←` / `→` | recolher / expandir nó da árvore |
-| `+` / `−` | profundidade do grafo (1–8) |
-| `g` / `G` (busca vazia) | topo / fim da lista ou árvore (`g` no grafo: voltar ao pacote da Visão geral) |
-| `o` (busca vazia) | abrir homepage no `$BROWSER`/`xdg-open` |
-| `T` | alternar tema (9 paletas) |
-| `R` | reconstruir o índice em segundo plano |
-| `?` | ajuda |
-| `q` (busca vazia) / `Ctrl+C` | sair |
-
-As teclas de comando (`d`, `r`, `v`, `j`, `k`, `g`, `G`, `q`, `o`, `+`, `−`,
-`1`–`4`) agem apenas com a busca vazia, para nunca roubar a digitação; use as
-setas para navegar enquanto digita.
+| `Tab` / `Shift+Tab` | trocar de aba nos dois modos |
+| setas, `PgUp` / `PgDn` | mover o cursor da lista atual |
+| `Ctrl+U` | limpar a busca da aba atual |
+| `F1` / `Ctrl+C` | ajuda / sair nos dois modos |
+| `/` | entrar em Search |
+| `1`–`4`, `d` / `r` / `v` | escolher aba em Navigate |
+| `Enter` | expandir árvore ou seguir nó em Navigate |
+| `Esc` | em Navigate: limpar o filtro; depois, voltar pelo histórico do grafo |
+| `+` / `−` | profundidade do grafo, de 1 a 8, em Navigate |
+| `e` / `l` | modo das arestas / rótulos do grafo |
+| `[` / `]` | rolar os detalhes do pacote no grafo |
+| `g` | voltar ao pacote da Visão geral no grafo |
+| `T` / `R` / `o` | tema / reconstruir índice / página do pacote em Navigate |
+| `?` / `q` | ajuda / sair em Navigate |
 
 ### Abas
 
-1. **Visão geral** — lista de resultados + painel de detalhes.
-2. **Dependências** — árvore expansível do que o pacote da Visão geral precisa.
-3. **Deps reversas** — dependentes diretos (expansíveis) + seção transitiva
-   (profundidade 2+; pressione Enter no cabeçalho da seção para abrir).
-4. **Grafo** — grafo de dependências por forças; Enter segue um nó,
-   `+`/`−` ajusta a profundidade, e `g` retorna ao pacote da Visão geral.
+1. **Overview** — busca fuzzy global por nome e sinopse.
+2. **Dependencies** — pesquisa todas as dependências alcançáveis do pacote,
+   inclusive variantes privadas e as três categorias de inputs.
+3. **Reverse deps** — pesquisa todas as dependências reversas alcançáveis
+   neste índice.
+4. **Graph** — filtra somente os nós projetados. Para uma busca completa das
+   relações, use as abas de dependências.
 
-A busca permanece visível no cabeçalho com borda, inclusive em terminais
-estreitos. Percorrer uma árvore move somente o cursor dessa árvore. O pacote
-da Visão geral continua selecionado quando você troca de aba. Seguir um nó
-muda a raiz do grafo; a raiz e a profundidade permanecem ao redesenhar e
-trocar de aba, até você escolher outro resultado na Visão geral ou pressionar
-`g` no grafo.
+Os filtros locais procuram palavras literais em nome e versão, sem distinguir
+maiúsculas; todas devem corresponder. Não usam o ranking fuzzy da Visão geral.
+Cada aba preserva sua busca e cursor. Mover-se numa árvore não muda o pacote
+da Visão geral; escolher outro resultado nela reinicia as vistas relacionadas.
+
+A árvore distingue caminhos repetidos e ciclos. O filtro busca o conjunto
+completo mesmo com ramos fechados ou quando a vista expandida atinge seu
+limite de linhas. Esse limite não esconde dependências diretas.
 
 ## Como funciona
 
-Ao iniciar, o guixvis carrega o cache ou executa `guix repl` com um script
-Guile embutido (`data/guix-index.scm`) que percorre todos os pacotes com
-`fold-packages`, extrai nome/versão/sinopse/descrição/licenças/localização e
-as arestas de dependência, e emite um único documento JSON na saída padrão
-(progresso na saída de erro). O lado Rust valida o documento, resolve as
-dependências, calcula as arestas reversas e mantém o índice em memória. Um
-snapshot binário desse índice resolvido é gravado em:
+Ao iniciar, o Guixvis carrega o snapshot ou executa o indexador Guile embutido.
+Ele começa em `fold-packages` e segue os objetos reais presentes em `inputs`,
+`propagated-inputs` e `native-inputs`. Objetos com o mesmo nome não são
+fundidos, e variantes privadas alcançadas pelos inputs também aparecem.
 
-```
-~/.cache/guixvis/index-v4.bin
-```
+São os inputs declarados dos pacotes para o sistema Guix selecionado, não um
+grafo de derivações, closure da store, plano de compilação cruzada ou lista de
+pacotes instalados. Falhas na extração produzem diagnósticos e um aviso de
+índice incompleto.
 
-O snapshot existe porque reparsear o JSON do indexador a cada partida custava
-mais do que todo o resto do programa somado; os números estão na seção de
-desempenho. Ele é escrito num arquivo temporário e renomeado no lugar, então
-uma queda no meio da escrita não deixa cache pela metade.
+O cache fica em `~/.cache/guixvis/index-v5.bin`, ou em `$XDG_CACHE_HOME`.
+A escrita é atômica. A versão 0.8 reconstrói o índice uma vez e preserva o cache
+v4 antigo. Snapshots corrompidos são colocados em quarentena, não apagados.
 
-O cache é vinculado ao commit do seu canal Guix (via `guix describe`);
-quando o Guix é atualizado, o cache é reconstruído sozinho. Um cache
-corrompido é posto em quarentena (renomeado, nunca apagado em silêncio).
+A escolha do Guix segue `GUIX` (perfil ou executável), `PATH` e os perfis
+padrão, nessa ordem. Os links simbólicos do lançador são preservados, pois
+resolvê-los pode remover extensões de canais. A origem registra esse caminho,
+o sistema e os nomes/commits de todos os canais. Se não for possível verificá-la,
+ou se `GUIX_PACKAGE_PATH` carregar módulos locais mutáveis, a interface avisa.
+IDs de pacotes só têm significado junto com o token do snapshot.
 
 ## Lendo o grafo
 
-O grafo era um campo de pontinhos iguais — um grafo de verdade, mas inútil como
-imagem — e depois virou uma imagem legível que ainda parecia um novelo. Agora
-também está calmo: pontos pequenos, arestas apagadas no fundo, e só os rótulos
-que merecem o espaço.
+O terminal começa na profundidade **1**, com arestas focadas no pacote
+selecionado. Não é preciso pressionar `−` várias vezes para limpar a vista
+inicial. O traçado usa pontos Unicode finos, sem preencher blocos inteiros.
+Em terminais largos, o desenho fica ao lado de uma lista navegável;
+nos estreitos, aparece a lista. Nome e versão completos quebram em linhas no
+painel de detalhes; `[` e `]` permitem rolá-lo.
 
-- **Bolhas pequenas.** Os nós são pontos; os hubs crescem só o suficiente para
-  serem achados, e duzentos deles deixam de virar borrão.
-- **Tamanho** é fan-in mais fan-out.
-- **Cor** segue a profundidade do BFS: raiz clara, dependências diretas normais,
-  e quanto mais fundo, mais apagado.
-- **Matiz** indica o tipo de aresta que trouxe o pacote: propagated puxa para o
-  roxo, native para o âmbar, inputs comuns ficam azuis.
-- **Seleção** ganha um halo, os vizinhos clareiam e o resto escurece — ajuda em
-  aglomerado denso.
-- **Rótulos** aparecem para a seleção, a raiz e os maiores hubs que couberem na
-  largura do terminal. Em terminais estreitos, a raiz e a seleção têm prioridade.
-- O cabeçalho mostra nós, arestas, nós ocultos e o tempo do layout; o rodapé
-  mostra o pacote selecionado com as contagens de dependências.
+`Enter` segue um pacote. `Esc` sai de Search, depois limpa o filtro e então
+volta pelo histórico do grafo. `g` retorna à referência da Visão geral.
+Profundidade, seleção e filtro sobrevivem à troca de abas.
 
-- **Modos de aresta.** `e` alterna todas as arestas (apagadas) → só as arestas
-  da seleção → nenhuma aresta. `l` liga/desliga os rótulos dos hubs. O modo
-  ativo aparece escrito no rodapé, então ninguém precisa adivinhar.
+`e` alterna arestas focadas, todas e nenhuma; `l` alterna os rótulos do
+desenho. A lista continua disponível quando os nomes não cabem no desenho.
+As marcas `I/P/N` preservam todas as categorias encontradas na descoberta.
 
-Teclas: `Enter` segue o nó selecionado, `+`/`−` mudam a profundidade, `g`
-refocaliza a raiz, `e` alterna as arestas, `l` alterna os rótulos, `1`–`4` (ou
-`Tab`) trocam de aba, `T` alterna os temas.
+O grafo tem limites: 200 nós **incluindo a raiz**, 3.000 arestas e um teto de
+trabalho na travessia. A interface distingue totais exibidos, omitidos e
+desconhecidos; desconhecido não vira zero. Para buscar relações completas,
+use Dependencies ou Reverse deps. Na web, a profundidade inicial continua 2.
 
 ## Desempenho
 
 Use `cargo run --release --example bench` para medir cache, busca e layout
-na sua máquina. `node examples/bench-web.cjs` mede separadamente o código de
-layout do grafo do navegador.
+na sua máquina. `node examples/bench-web.cjs` mede o layout do navegador.
 
-Esta tabela registra medições de versões anteriores, com 32.500 pacotes.
-Os tempos variam conforme a máquina, os canais e o estado do cache; não são
-garantias de latência. As [notas da versão 0.7.0](docs/releases/0.7.0.md)
-descrevem as mudanças e a validação desta versão.
+Nesta máquina, com build release e 41.746 objetos de oito canais, a extração
+levou 8,73 s e a leitura do snapshot de 18,6 MB levou 109 ms. Oito buscas tiveram
+média de 2,63 ms (melhor de 20 execuções por consulta, limite de 500 resultados).
+Os layouts amostrados de 200 nós levaram cerca de 13–15 ms, com 300 iterações.
 
-| Etapa | Tempo | Observação |
-|---|---|---|
-| Construção do índice (`guix repl` + Guile) | **3,7 s** | só quando o cache falta ou o canal mudou |
-| Cache até índice utilizável | **30 ms** | snapshot binário, 32.500 pacotes (era ~126 ms com JSON gzipado) |
-| Busca fuzzy, 500 resultados | **~3 ms** | nucleo sobre nome + sinopse; vários termos entram em E e são ranqueados pela média geométrica |
-| Layout do grafo, 200 nós | **≤10 ms** | Fruchterman–Reingold determinístico, 300 iterações |
-| Payload da API de grafo | **33 KB → 4,8 KB** | gzip quando o navegador pede |
-
-O indexador já é rápido o bastante para que paralelizá-lo rendesse pouco; o
-tempo estava no formato do cache, então foi ali que ele foi gasto. Uma
-aproximação do layout por grade uniforme foi implementada, medida 25% mais lenta
-que o laço exato de pares no limite de 200 nós, e removida — o comentário em
-`src/graph.rs` guarda os números para ninguém reintroduzir por intuição. O snapshot
-fica em `~/.cache/guixvis/index-v4.bin`, é escrito de forma atômica e é atrelado
-ao commit do seu Guix.
+São medições locais, não garantias de latência nem uma comparação direta de
+ganho com índices antigos. A versão 0.8 preserva mais objetos e identidades
+exatas. A travessia de relações e o layout do terminal rodam fora da renderização;
+filtrar não recalcula o layout a cada quadro.
 
 ## Segurança
 
@@ -353,7 +316,7 @@ web é deliberadamente chata quanto a alcance:
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Resource-Policy` e `Cache-Control: no-store` na API;
 - valida os nomes de pacote vindos da URL, limita a busca a 200 caracteres, a
-  profundidade a 1–8 e o grafo a 200 nós relacionados mais a raiz, com
+  profundidade a 1–8 e o grafo a 200 nós incluindo a raiz, com
   concorrência máxima de quatro;
 - grava o script Guile embutido num diretório privado `0700` como arquivo `0600`
   (o diretório temporário do sistema é gravável por todos) e recusa arquivos de
@@ -373,7 +336,7 @@ cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features            # testes unitários, fixtures e web
 node --test tests/web_graph_tests.cjs tests/web_app_tests.cjs
-emacs -Q --batch -L elisp -l elisp/guixvis-tests.el -f ert-run-tests-batch-and-exit
+emacs -Q --batch -L elisp -l elisp/guixvis.el -l elisp/guixvis-tests.el -f ert-run-tests-batch-and-exit
 cargo test --test live_guix_tests -- --ignored   # testes reais contra o Guix
 ```
 
@@ -391,10 +354,10 @@ fuzzy com nucleo), `src/indexer.rs` (subprocesso `guix repl`),
   Guile de pacotes; leva segundos com cache quente e alguns minutos frio.
   O progresso aparece ao vivo.
 - **Dados desatualizados após `guix pull`** — reinicie o guixvis; o cache é
-  reconstruído automaticamente porque o commit do canal mudou.
+  reconstruído automaticamente quando a origem verificada muda.
 - **Sem cores** — `NO_COLOR` é respeitado (tema em tons de cinza).
-- **Indexador travado** — pressione `R` para recomeçar, ou apague
-  `~/.cache/guixvis/` e reinicie.
+- **Indexador travado** — saia de Search e pressione `R`, ou reinicie com
+  `guixvis --rebuild`. Confira o erro antes de remover qualquer cache.
 
 ## Licença
 

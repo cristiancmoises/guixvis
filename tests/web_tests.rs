@@ -36,6 +36,173 @@ async fn json_of(res: axum::response::Response) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn exact_identity_and_stale_snapshot() {
+    let index = common::identity_fixture();
+    let token = index.snapshot_id().to_string();
+    let api = router(AppState::with_index(index));
+    let health = json_of(api.clone().oneshot(get("/api/v1/health")).await.unwrap()).await;
+    assert!(health["origin"]["channels"].is_array());
+    for id in [3, 4] {
+        let res = api
+            .clone()
+            .oneshot(get(&format!(
+                "/api/v1/package/variant?id={id}&snapshot={token}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_of(res).await["id"], id);
+    }
+    let res = api
+        .oneshot(get(&format!(
+            "/api/v1/package/root?id=0&snapshot={}",
+            "0".repeat(64)
+        )))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn exact_api_validates_pairs_and_preserves_zero_and_relation_kinds() {
+    let index = common::identity_fixture();
+    let token = index.snapshot_id().to_string();
+    let api = router(AppState::with_index(index));
+    for route in ["package", "graph"] {
+        for query in [
+            "id=0".to_string(),
+            format!("snapshot={token}"),
+            format!("id=-1&snapshot={token}"),
+            format!("id=4294967296&snapshot={token}"),
+            "id=0&snapshot=bad".into(),
+        ] {
+            let res = api
+                .clone()
+                .oneshot(get(&format!("/api/v1/{route}/root?{query}")))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{route}?{query}");
+            assert!(json_of(res).await["error"].is_string());
+        }
+        let res = api
+            .clone()
+            .oneshot(get(&format!(
+                "/api/v1/{route}/root?id=999&snapshot={token}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let res = api
+            .clone()
+            .oneshot(get(&format!("/api/v1/{route}/wrong?id=0&snapshot={token}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let res = api
+            .clone()
+            .oneshot(get(&format!(
+                "/api/v1/{route}/root?id=999&snapshot={}",
+                "0".repeat(64)
+            )))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::CONFLICT,
+            "stale token checked before ID"
+        );
+    }
+    let res = api
+        .clone()
+        .oneshot(get(&format!("/api/v1/package/root?id=0&snapshot={token}")))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = json_of(res).await;
+    assert_eq!(body["id"], 0);
+    assert_eq!(body["snapshot"], token);
+    assert_eq!(body["deps"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        body["deps"][0]["kinds"],
+        serde_json::json!(["input", "propagated", "native"])
+    );
+    let res = api
+        .clone()
+        .oneshot(get(&format!("/api/v1/graph/root?id=0&snapshot={token}")))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = json_of(res).await;
+    assert_eq!(body["root_id"], 0);
+    assert_eq!(body["depth"], 2);
+    assert_eq!(
+        body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["name"] == "variant")
+            .count(),
+        2
+    );
+    let edge = body["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["from_id"] == 0 && e["to_id"] == 1)
+        .unwrap();
+    assert_eq!(edge["kinds"].as_array().unwrap().len(), 3);
+    let res = api
+        .clone()
+        .oneshot(get("/api/v1/search?q=variant"))
+        .await
+        .unwrap();
+    let body = json_of(res).await;
+    assert_eq!(body["snapshot"], token);
+    let ids: Vec<_> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_u64().unwrap())
+        .collect();
+    assert!(ids.contains(&3) && ids.contains(&4));
+    let body = json_of(
+        api.oneshot(get(&format!(
+            "/api/v1/package/variant?id=4&snapshot={token}"
+        )))
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(body["catalog"], false);
+    assert_eq!(body["command_safe"], false);
+}
+
+#[tokio::test]
+async fn snapshot_survives_cache_restart_but_not_changed_content_at_generation_one() {
+    let old = common::identity_fixture();
+    let token = old.snapshot_id().to_string();
+    let loaded = guixvis::blob::decode(&guixvis::blob::encode(&old), 999).unwrap();
+    let path = format!("/api/v1/package/root?id=0&snapshot={token}");
+    let res = router(AppState::with_index(loaded))
+        .oneshot(get(&path))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let mut doc: guixvis::model::IndexDoc =
+        serde_json::from_str(include_str!("fixtures/identity.json")).unwrap();
+    doc.packages[0].native_inputs.clear();
+    let replacement = guixvis::index::Index::from_doc(doc, 0).unwrap();
+    let api = router(AppState::with_index(replacement));
+    let health = json_of(api.clone().oneshot(get("/api/v1/health")).await.unwrap()).await;
+    assert_eq!(health["generation"], 1);
+    assert_ne!(health["snapshot"], token);
+    assert_eq!(
+        api.oneshot(get(&path)).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
 async fn health_reports_generation_and_packages() {
     let res = router(state())
         .oneshot(get("/api/v1/health"))

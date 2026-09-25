@@ -1,6 +1,6 @@
 {
   "header": {
-    "schema": 3,
+    "schema": 4,
     "guix_commit": "testcommit",
     "generated_ms": "0",
     "package_count": 10
@@ -15,9 +15,9 @@
       "homepage": "https://www.gnu.org/software/emacs/",
       "licenses": ["GPL 3+"],
       "file": ["gnu/packages/emacs.scm", 591],
-      "inputs": ["gtk+", "zlib"],
-      "propagated_inputs": ["pkg-config"],
-      "native_inputs": ["texinfo"]
+      "inputs": [3, 4],
+      "propagated_inputs": [8],
+      "native_inputs": [9]
     },
     {
       "id": 1,
@@ -28,7 +28,7 @@
       "homepage": "",
       "licenses": [],
       "file": ["gnu/packages/emacs.scm", 700],
-      "inputs": ["zlib"],
+      "inputs": [4],
       "propagated_inputs": [],
       "native_inputs": []
     },
@@ -41,7 +41,7 @@
       "homepage": "",
       "licenses": [],
       "file": ["gnu/packages/emacs.scm", 800],
-      "inputs": ["zlib"],
+      "inputs": [4],
       "propagated_inputs": [],
       "native_inputs": []
     },
@@ -54,7 +54,7 @@
       "homepage": "",
       "licenses": ["LGPL 2.1+"],
       "file": ["gnu/packages/gtk.scm", 100],
-      "inputs": ["zlib"],
+      "inputs": [4],
       "propagated_inputs": [],
       "native_inputs": []
     },
@@ -80,7 +80,7 @@
       "homepage": "",
       "licenses": [],
       "file": ["", 0],
-      "inputs": ["cyc-b"],
+      "inputs": [6],
       "propagated_inputs": [],
       "native_inputs": []
     },
@@ -93,7 +93,7 @@
       "homepage": "",
       "licenses": [],
       "file": ["", 0],
-      "inputs": ["cyc-a"],
+      "inputs": [5],
       "propagated_inputs": [],
       "native_inputs": []
     },

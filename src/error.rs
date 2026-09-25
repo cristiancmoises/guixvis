@@ -5,6 +5,8 @@ use thiserror::Error;
 /// Validation failures while turning an `IndexDoc` into an in-memory `Index`.
 #[derive(Debug, Error)]
 pub enum IndexError {
+    #[error("index exceeds the safety limit for {0}")]
+    Limit(&'static str),
     #[error("cache schema {0} unsupported (expected {1})")]
     Schema(u32, u32),
     #[error("channel commit mismatch: cache={0} live={1}")]

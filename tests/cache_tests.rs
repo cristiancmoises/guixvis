@@ -13,15 +13,128 @@ use guixvis::model::IndexDoc;
 use common::load_fixture;
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("guixvis-test-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create temp dir");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir =
+        std::env::temp_dir().join(format!("guixvis-test-{tag}-{}-{nonce}", std::process::id()));
+    fs::create_dir(&dir).expect("create exclusive temp dir");
     dir
 }
 
+#[test]
+fn secondary_channel_changes_snapshot_content() {
+    let mut value: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/small.json")).unwrap();
+    value["header"]["origin"] = serde_json::json!({
+        "executable": "/guix/bin/guix", "system": "x86_64-linux", "verified": true,
+        "mutable_package_path": false, "channels": [
+            {"name":"guix", "commit":"abc"}, {"name":"extra", "commit":"def"}
+        ]
+    });
+    let a = Index::from_doc(serde_json::from_value(value.clone()).unwrap(), 1).unwrap();
+    value["header"]["origin"]["channels"][1]["commit"] = "changed".into();
+    let b = Index::from_doc(serde_json::from_value(value).unwrap(), 1).unwrap();
+    assert_ne!(
+        blob::encode(&a),
+        blob::encode(&b),
+        "secondary channel identity must persist"
+    );
+    assert_ne!(a.snapshot_id(), b.snapshot_id());
+}
+
+#[test]
+fn snapshot_token_is_content_scoped_not_process_scoped() {
+    let index = fixture_index();
+    let loaded = blob::decode(&blob::encode(&index), 999999).unwrap();
+    assert_eq!(index.snapshot_id(), loaded.snapshot_id());
+    assert_eq!(index.snapshot_id().len(), 64);
+    let mut doc: IndexDoc = serde_json::from_str(include_str!("fixtures/identity.json")).unwrap();
+    let a = Index::from_doc(doc.clone(), 0).unwrap();
+    doc.packages[0].inputs.retain(|id| *id != 4);
+    let b = Index::from_doc(doc, 0).unwrap();
+    assert_ne!(a.snapshot_id(), b.snapshot_id());
+}
+
+#[test]
+fn origin_order_is_canonical_and_metadata_changes_token() {
+    let mut doc: IndexDoc = serde_json::from_str(include_str!("fixtures/identity.json")).unwrap();
+    doc.header.origin = fixture_origin();
+    doc.header.origin.channels.push(guixvis::model::ChannelPin {
+        name: "extra".into(),
+        commit: "abc".into(),
+    });
+    let a = Index::from_doc(doc.clone(), 0).unwrap();
+    doc.header.origin.channels.reverse();
+    let b = Index::from_doc(doc.clone(), 123).unwrap();
+    assert_eq!(a.snapshot_id(), b.snapshot_id());
+    doc.packages[4].catalog = true;
+    let c = Index::from_doc(doc.clone(), 0).unwrap();
+    assert_ne!(b.snapshot_id(), c.snapshot_id());
+    doc.packages[0].native_inputs.clear();
+    let d = Index::from_doc(doc.clone(), 0).unwrap();
+    assert_ne!(c.snapshot_id(), d.snapshot_id());
+    doc.diagnostics.push(guixvis::model::IndexDiagnostic {
+        package_id: 0,
+        kind: "input".into(),
+        code: "accessor-failed".into(),
+        message: "Unavailable".into(),
+    });
+    let e = Index::from_doc(doc, 0).unwrap();
+    assert_ne!(d.snapshot_id(), e.snapshot_id());
+}
+
+#[test]
+fn mutable_or_incomplete_origin_never_claims_freshness() {
+    let dir = temp_dir("unverified");
+    let cache = Cache::at(dir.clone());
+    cache.save(&fixture_index()).unwrap();
+    let mut origin = fixture_origin();
+    origin.mutable_package_path = true;
+    assert!(matches!(
+        cache.load(Some(&origin), 0).unwrap(),
+        CacheStatus::Unverified(_)
+    ));
+    origin.mutable_package_path = false;
+    origin.system.clear();
+    assert!(matches!(
+        cache.load(Some(&origin), 0).unwrap(),
+        CacheStatus::Unverified(_)
+    ));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn v4_remains_intact_when_v5_is_built() {
+    let dir = temp_dir("migration");
+    let old = dir.join("index-v4.bin");
+    fs::write(&old, b"GUIV4IDX rollback fixture").unwrap();
+    let cache = Cache::at(dir.clone());
+    assert!(matches!(cache.load(None, 0).unwrap(), CacheStatus::Absent));
+    cache.save(&fixture_index()).unwrap();
+    assert_eq!(fs::read(old).unwrap(), b"GUIV4IDX rollback fixture");
+    assert_eq!(cache.path().file_name().unwrap(), "index-v5.bin");
+    fs::remove_dir_all(dir).unwrap();
+}
+
 fn fixture_index() -> Index {
-    let doc: IndexDoc = serde_json::from_str(include_str!("fixtures/small.json")).unwrap();
+    let mut doc: IndexDoc = serde_json::from_str(include_str!("fixtures/small.json")).unwrap();
+    doc.header.origin = fixture_origin();
     Index::from_doc(doc, 42).expect("fixture index")
+}
+
+fn fixture_origin() -> guixvis::model::GuixOrigin {
+    guixvis::model::GuixOrigin {
+        executable: "/fixture/bin/guix".into(),
+        system: "x86_64-linux".into(),
+        channels: vec![guixvis::model::ChannelPin {
+            name: "guix".into(),
+            commit: "testcommit".into(),
+        }],
+        verified: true,
+        mutable_package_path: false,
+    }
 }
 
 #[test]
@@ -30,7 +143,7 @@ fn round_trip_save_and_load() {
     let cache = Cache::at(dir.clone());
     cache.save(&fixture_index()).expect("save");
 
-    let status = cache.load(Some("testcommit"), 7).expect("load");
+    let status = cache.load(Some(&fixture_origin()), 7).expect("load");
     let CacheStatus::Fresh(loaded) = status else {
         panic!("expected Fresh, got {status:?}");
     };
@@ -89,7 +202,7 @@ fn truncated_or_garbage_snapshot_is_rejected() {
 fn absent_cache_reports_absent() {
     let dir = temp_dir("absent");
     let cache = Cache::at(dir.clone());
-    let status = cache.load(Some("testcommit"), 0).expect("load");
+    let status = cache.load(Some(&fixture_origin()), 0).expect("load");
     assert!(matches!(status, CacheStatus::Absent));
     fs::remove_dir_all(dir).ok();
 }
@@ -100,14 +213,16 @@ fn commit_mismatch_reports_stale() {
     let cache = Cache::at(dir.clone());
     cache.save(&fixture_index()).expect("save");
 
-    let status = cache.load(Some("othercommit"), 0).expect("load");
+    let mut other = fixture_origin();
+    other.channels[0].commit = "othercommit".into();
+    let status = cache.load(Some(&other), 0).expect("load");
     assert!(matches!(status, CacheStatus::Stale { .. }));
     // Same commit accepted.
-    let status = cache.load(Some("testcommit"), 0).expect("load");
+    let status = cache.load(Some(&fixture_origin()), 0).expect("load");
     assert!(matches!(status, CacheStatus::Fresh(_)));
-    // Unknown live commit (unkeyed mode) also accepted.
+    // Unknown origin is usable, but never called fresh.
     let status = cache.load(None, 0).expect("load");
-    assert!(matches!(status, CacheStatus::Fresh(_)));
+    assert!(matches!(status, CacheStatus::Unverified(_)));
     fs::remove_dir_all(dir).ok();
 }
 
@@ -117,7 +232,7 @@ fn corrupt_cache_is_quarantined_not_deleted() {
     let cache = Cache::at(dir.clone());
     fs::write(cache.path(), b"this is not an index snapshot").expect("write garbage");
 
-    let result = cache.load(Some("testcommit"), 0);
+    let result = cache.load(Some(&fixture_origin()), 0);
     assert!(result.is_err());
     cache.quarantine();
     assert!(!cache.path().exists(), "corrupt cache moved away");
@@ -147,7 +262,7 @@ fn save_does_not_follow_a_preexisting_temporary_symlink() {
     let cache = Cache::at(dir.clone());
     let victim = dir.join("unrelated-file");
     fs::write(&victim, b"keep this content").unwrap();
-    let planted = dir.join(format!("index-v4.bin.tmp-{}", std::process::id()));
+    let planted = dir.join(format!("index-v5.bin.tmp-{}", std::process::id()));
     symlink(&victim, &planted).unwrap();
 
     cache
@@ -160,7 +275,7 @@ fn save_does_not_follow_a_preexisting_temporary_symlink() {
         .is_symlink());
     assert!(matches!(
         cache.load(None, 0).unwrap(),
-        CacheStatus::Fresh(_)
+        CacheStatus::Unverified(_)
     ));
     fs::remove_dir_all(dir).ok();
 }
@@ -191,7 +306,7 @@ fn concurrent_saves_use_independent_temporary_files() {
     });
     assert!(matches!(
         cache.load(None, 0).unwrap(),
-        CacheStatus::Fresh(_)
+        CacheStatus::Unverified(_)
     ));
     assert_eq!(
         fs::read_dir(&dir).unwrap().count(),

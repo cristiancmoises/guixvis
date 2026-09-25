@@ -24,6 +24,8 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub enum CacheStatus {
     /// Snapshot decoded and matches the live channel commit.
     Fresh(Index),
+    /// Decodable, but origin could not be verified. Never advertised as fresh.
+    Unverified(Index),
     /// Snapshot is readable but was produced against a different Guix commit.
     Stale { reason: String },
     /// No cache file present.
@@ -51,7 +53,7 @@ impl Cache {
     }
 
     pub fn path(&self) -> PathBuf {
-        self.dir.join("index-v4.bin")
+        self.dir.join("index-v5.bin")
     }
 
     /// Load the cached snapshot. `live_commit` is the commit of the currently
@@ -59,7 +61,7 @@ impl Cache {
     /// then accepted with an "unverified" badge by the caller).
     pub fn load(
         &self,
-        live_commit: Option<&str>,
+        live_origin: Option<&crate::model::GuixOrigin>,
         built_ms: u64,
     ) -> Result<CacheStatus, CacheError> {
         let path = self.path();
@@ -91,14 +93,17 @@ impl Cache {
         }
         let index = blob::decode(&bytes, built_ms).map_err(|e| CacheError::Parse(e.to_string()))?;
 
-        if let Some(live) = live_commit.filter(|c| !c.is_empty()) {
-            if index.guix_commit != live {
+        if let Some(live) = live_origin.filter(|o| o.is_verified()) {
+            if index.origin.is_verified() && index.origin != *live {
                 return Ok(CacheStatus::Stale {
-                    reason: format!("cache commit {} != live commit {}", index.guix_commit, live),
+                    reason: "Guix executable, system or channel set changed".into(),
                 });
             }
+            if index.origin.is_verified() {
+                return Ok(CacheStatus::Fresh(index));
+            }
         }
-        Ok(CacheStatus::Fresh(index))
+        Ok(CacheStatus::Unverified(index))
     }
 
     /// Atomically persist a snapshot of `index`.
@@ -127,7 +132,7 @@ impl Cache {
         for _ in 0..128 {
             let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = self.dir.join(format!(
-                "index-v4.bin.tmp-{}-{sequence}",
+                "index-v5.bin.tmp-{}-{sequence}",
                 std::process::id()
             ));
             let mut options = OpenOptions::new();
@@ -158,36 +163,14 @@ impl Cache {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let dest = self.dir.join(format!("index-v4.bin.corrupt-{ts}"));
+        let dest = self.dir.join(format!("index-v5.bin.corrupt-{ts}"));
         let _ = fs::rename(&path, &dest);
     }
 }
 
 /// Small helper: canonical location of the `guix` binary.
 pub fn find_guix() -> Option<PathBuf> {
-    let candidates: Vec<PathBuf> = [
-        std::env::var_os("GUIX")
-            .map(PathBuf::from)
-            .map(|p| p.join("bin").join("guix")),
-        Some(PathBuf::from("/run/current-system/profile/bin/guix")),
-        dirs::home_dir().map(|h| h.join(".config/guix/current/bin/guix")),
-        dirs::home_dir().map(|h| h.join(".guix-profile/bin/guix")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    candidates
-        .iter()
-        .find(|p| p.exists())
-        .cloned()
-        .or_else(which_guix)
-}
-
-fn which_guix() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|d| d.join("guix"))
-        .find(|p| p.is_file())
+    crate::guix_env::current_guix().ok()
 }
 
 /// Read the active channel commit via `guix describe --format=json`.

@@ -143,7 +143,7 @@ fn prefilter_preserves_exact_result_set() {
 #[test]
 fn prefilter_preserves_case_and_unicode_normalization() {
     let doc = serde_json::from_value(serde_json::json!({
-        "header": {"schema": 3, "package_count": 3},
+        "header": {"schema": 4, "package_count": 3},
         "packages": [
             {"id": 0, "name": "EMACS"},
             {"id": 1, "name": "café"},
@@ -181,7 +181,7 @@ fn limited_results_keep_the_full_ranking_prefix() {
 #[test]
 fn empty_index_and_zero_limit_do_not_scan() {
     let doc = serde_json::from_value(serde_json::json!({
-        "header": {"schema": 3, "package_count": 0}, "packages": []
+        "header": {"schema": 4, "package_count": 0}, "packages": []
     }))
     .unwrap();
     let index = guixvis::index::Index::from_doc(doc, 0).unwrap();
@@ -201,7 +201,7 @@ fn parallel_selection_keeps_the_full_ranking_prefix() {
         })
         .collect();
     let doc = serde_json::from_value(serde_json::json!({
-        "header": {"schema": 3, "package_count": packages.len()}, "packages": packages
+        "header": {"schema": 4, "package_count": packages.len()}, "packages": packages
     }))
     .unwrap();
     let index = guixvis::index::Index::from_doc(doc, 0).unwrap();
@@ -233,7 +233,7 @@ fn duplicate_names_keep_version_order_at_every_limit() {
         })
         .collect();
     let doc = serde_json::from_value(serde_json::json!({
-        "header": {"schema": 3, "package_count": packages.len()}, "packages": packages
+        "header": {"schema": 4, "package_count": packages.len()}, "packages": packages
     }))
     .unwrap();
     let index = guixvis::index::Index::from_doc(doc, 0).unwrap();

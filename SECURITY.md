@@ -22,8 +22,16 @@ shell that Guixvis executes.
 Cache writes use a newly created private temporary file and an atomic rename.
 Existing temporary-file paths are never opened with truncation. Snapshot reads
 have a size limit; malformed snapshots are rejected. The `guix describe`
-subprocess has a timeout and bounded captured output. Guile indexing runs the
-user's locally installed Guix, so installed channels remain trusted code.
+and indexing subprocesses have deadlines, bounded output, cancellation, and
+owned process-group cleanup. Package and origin text is sanitized before
+terminal rendering. Guile indexing runs the user's locally installed Guix,
+so installed channels remain trusted code.
+
+Exact package references require both an object ID and a content-scoped
+snapshot token. Stale references return an error, not a same-name replacement.
+Origin verification covers the selected launcher, system, and channel commits;
+unverifiable or mutable local-module origins are labeled accordingly. This is
+cache provenance, not a security audit of the channels themselves.
 
 ## Limits
 

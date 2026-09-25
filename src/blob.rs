@@ -17,7 +17,7 @@ use crate::error::IndexError;
 use crate::index::{Index, Package};
 
 /// File magic, version included so a stale file is rejected cheaply.
-const MAGIC: &[u8; 8] = b"GUIV4IDX";
+const MAGIC: &[u8; 8] = b"GUIV5IDX";
 /// Upper bounds; anything beyond these is treated as corruption.
 const MAX_PACKAGES: u32 = 1_000_000;
 const MAX_STRING: u32 = 8 * 1024 * 1024;
@@ -33,18 +33,35 @@ pub enum BlobError {
     Truncated { at: usize, need: usize },
     #[error("snapshot rejected by index validation: {0}")]
     Invalid(#[from] IndexError),
+    #[error("invalid snapshot field: {0}")]
+    Field(&'static str),
 }
 
 /// Encode an index snapshot.
 pub fn encode(index: &Index) -> Vec<u8> {
+    encode_payload(index)
+}
+
+/// Canonical persisted content; excludes the derived token and load timestamp.
+pub(crate) fn encode_payload(index: &Index) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 * 1024 * 1024);
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&crate::index::INDEX_SCHEMA_VERSION.to_le_bytes());
     out.extend_from_slice(&(index.packages.len() as u32).to_le_bytes());
     put_str(&mut out, &index.guix_commit);
     out.extend_from_slice(&index.generated_ms.to_le_bytes());
+    put_str(&mut out, &index.origin.executable);
+    put_str(&mut out, &index.origin.system);
+    out.push(u8::from(index.origin.verified));
+    out.push(u8::from(index.origin.mutable_package_path));
+    out.extend_from_slice(&(index.origin.channels.len() as u32).to_le_bytes());
+    for channel in &index.origin.channels {
+        put_str(&mut out, &channel.name);
+        put_str(&mut out, &channel.commit);
+    }
     for p in &index.packages {
         out.extend_from_slice(&p.id.to_le_bytes());
+        out.push(u8::from(p.catalog));
         put_str(&mut out, &p.name);
         put_str(&mut out, &p.version);
         put_str(&mut out, &p.synopsis);
@@ -59,6 +76,13 @@ pub fn encode(index: &Index) -> Vec<u8> {
         put_ids(&mut out, &p.inputs);
         put_ids(&mut out, &p.propagated);
         put_ids(&mut out, &p.native);
+    }
+    out.extend_from_slice(&(index.diagnostics.len() as u32).to_le_bytes());
+    for d in index.diagnostics.iter() {
+        out.extend_from_slice(&d.package_id.to_le_bytes());
+        put_str(&mut out, &d.kind);
+        put_str(&mut out, &d.code);
+        put_str(&mut out, &d.message);
     }
     out
 }
@@ -77,12 +101,41 @@ pub fn decode(bytes: &[u8], built_ms: u64) -> Result<Index, BlobError> {
         ));
     }
     let count = r.capped_u32(MAX_PACKAGES)?;
+    // Even an empty package needs much more than one byte; reject implausible
+    // counts before reserving memory, independently of the absolute limit.
+    if count as usize > bytes.len() / 40 {
+        return Err(BlobError::Field("package count"));
+    }
     let guix_commit = r.string()?;
     let generated_ms = r.u64()?;
+    let executable = r.string()?;
+    let system = r.string()?;
+    let verified = r.boolean()?;
+    let mutable_package_path = r.boolean()?;
+    let channel_count = r.capped_u32(4096)?;
+    let mut channels = Vec::new();
+    for _ in 0..channel_count {
+        channels.push(crate::model::ChannelPin {
+            name: r.string()?,
+            commit: r.string()?,
+        });
+    }
+    let origin = crate::model::GuixOrigin {
+        executable,
+        system,
+        verified,
+        mutable_package_path,
+        channels,
+    };
 
     let mut packages = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let id = r.u32()?;
+        let catalog = match r.take(1)?[0] {
+            0 => false,
+            1 => true,
+            _ => return Err(BlobError::Field("catalog")),
+        };
         let name = r.string()?;
         let version = r.string()?;
         let synopsis = r.string()?;
@@ -100,6 +153,7 @@ pub fn decode(bytes: &[u8], built_ms: u64) -> Result<Index, BlobError> {
         let native = r.ids()?;
         packages.push(Package {
             id,
+            catalog,
             name: Arc::from(name),
             version: Arc::from(version),
             synopsis: Arc::from(synopsis),
@@ -114,11 +168,26 @@ pub fn decode(bytes: &[u8], built_ms: u64) -> Result<Index, BlobError> {
         });
     }
 
-    Ok(Index::from_packages(
+    let n = r.capped_u32(MAX_PACKAGES)?;
+    let mut diagnostics = Vec::new();
+    for _ in 0..n {
+        diagnostics.push(crate::model::IndexDiagnostic {
+            package_id: r.u32()?,
+            kind: r.string()?,
+            code: r.string()?,
+            message: r.string()?,
+        });
+    }
+    if r.at != bytes.len() {
+        return Err(BlobError::Field("trailing bytes"));
+    }
+    Ok(Index::from_parts(
         packages,
         guix_commit,
         generated_ms,
         built_ms,
+        diagnostics,
+        origin,
     )?)
 }
 
@@ -140,6 +209,13 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    fn boolean(&mut self) -> Result<bool, BlobError> {
+        match self.take(1)?[0] {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(BlobError::Field("boolean")),
+        }
+    }
     fn take(&mut self, n: usize) -> Result<&'a [u8], BlobError> {
         let end = self.at.checked_add(n).ok_or(BlobError::Truncated {
             at: self.at,
@@ -191,6 +267,9 @@ impl<'a> Reader<'a> {
 
     fn ids(&mut self) -> Result<Vec<u32>, BlobError> {
         let n = self.capped_u32(MAX_DEPS)? as usize;
+        if n > (self.buf.len() - self.at) / 4 {
+            return Err(BlobError::Field("dependency count"));
+        }
         let mut out = Vec::with_capacity(n);
         for _ in 0..n {
             out.push(self.u32()?);

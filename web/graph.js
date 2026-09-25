@@ -29,20 +29,29 @@ function radiusOf(degree) {
 }
 
 class GraphEngine {
-  /* nodes: [{name, degree, depth}]; edges: [{from, to}] (names).
-     opts: { fresh, reducedMotion } */
+  /* Exact graphs use numeric IDs; unique name-only graphs are a legacy adapter.
+     `names` is the stable key order (IDs in exact mode), never display text. */
   constructor(nodes, edges, opts = {}) {
     this.nodes = nodes;
-    this.edges = edges;
+    this.exact = nodes.some((n) => n.id !== undefined);
+    const validId = (id) => Number.isInteger(id) && id >= 0 && id <= 0xffffffff;
+    if (this.exact && !nodes.every((n) => validId(n.id))) throw new Error("Invalid graph identity");
+    this.names = nodes.map((n) => this.exact ? n.id : n.name);
+    if (new Set(this.names).size !== nodes.length) throw new Error("Ambiguous graph identity");
+    this.byKey = new Map(nodes.map((node, i) => [this.names[i], node]));
+    this.edges = edges.map((e) => {
+      const from = this.exact ? e.from_id : e.from;
+      const to = this.exact ? e.to_id : e.to;
+      if (!this.byKey.has(from) || !this.byKey.has(to)) throw new Error("Invalid graph edge identity");
+      return { ...e, from, to };
+    });
     this.reducedMotion = !!opts.reducedMotion;
-    this.names = nodes.map((n) => n.name);
-    this.byName = new Map(nodes.map((node) => [node.name, node]));
-    this.radii = new Map(nodes.map((node) => [node.name, radiusOf(node.degree)]));
+    this.radii = new Map(nodes.map((node, i) => [this.names[i], radiusOf(node.degree)]));
     this.style = "bubbles";
     this.boxes = new Map();
     this.adj = new Map();
     this.names.forEach((n) => this.adj.set(n, []));
-    for (const e of edges) {
+    for (const e of this.edges) {
       if (this.adj.has(e.from) && this.adj.has(e.to)) {
         this.adj.get(e.from).push(e.to);
         this.adj.get(e.to).push(e.from);
@@ -260,7 +269,7 @@ class GraphEngine {
   }
 
   node(name) {
-    return this.byName.get(name) || null;
+    return this.byKey.get(name) || null;
   }
 
   /* Run until settled (reduced motion / tests). */
@@ -481,7 +490,7 @@ class GraphCanvas {
     if (!this.engine) return;
     this.engine.style = this.style;
     if (this.style === "rectangles") {
-      this.engine.boxes = new Map(this.engine.names.map((name) => [name, this.rectangleLabel(name)]));
+      this.engine.boxes = new Map(this.engine.names.map((key) => [key, this.rectangleLabel(this.engine.node(key).name)]));
     }
   }
 
@@ -500,15 +509,16 @@ class GraphCanvas {
 
   setGraph(engine, { root, selected, skeleton = false } = {}) {
     this.engine = engine;
-    this.rootName = root || (engine ? engine.names[0] : null);
-    this.selected = selected || null;
+    this.rootName = root ?? (engine ? engine.names[0] : null);
+    this.selected = selected ?? null;
     this.hovered = null;
     this.skeleton = skeleton;
     this.loadedAt = performance.now();
     if (engine) {
       engine.unit = 1 / this.fitScale();
       // Keep measurements only for the active graph, avoiding unbounded history growth.
-      this.labelCache = new Map([...this.labelCache].filter(([name]) => engine.byName.has(name)));
+      const labels = new Set(engine.nodes.map((n) => n.name));
+      this.labelCache = new Map([...this.labelCache].filter(([name]) => labels.has(name)));
       this.configureGeometry();
       if (engine.reducedMotion) engine.settle();
     }
@@ -614,7 +624,7 @@ class GraphCanvas {
     ctx.stroke();
     ctx.beginPath();
     ctx.strokeStyle = this.colors.edgeHot;
-    const hot = new Set([this.rootName, this.hovered, this.selected].filter(Boolean));
+    const hot = new Set([this.rootName, this.hovered, this.selected].filter((key) => key != null));
     for (const e of eng.edges) {
       if (hot.has(e.from) || hot.has(e.to)) {
         const a = eng.pos.get(e.from);
@@ -647,11 +657,18 @@ class GraphCanvas {
         ctx.rect(p.x - box.halfWidth, p.y - box.halfHeight, box.halfWidth * 2, box.halfHeight * 2);
         ctx.fill();
         ctx.stroke();
-        ctx.font = `500 ${12 * unit}px ui-sans-serif, system-ui, sans-serif`;
+        // Draw lettering in the same CSS-pixel units used by rectangleLabel.
+        // The local scale follows the box at every zoom without asking the
+        // browser to rasterize a fractional world-unit font.
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.scale(unit, unit);
+        ctx.font = "500 12px ui-sans-serif, system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillStyle = this.colors.label;
-        ctx.fillText(eng.boxes.get(name).label, p.x, p.y);
+        ctx.fillText(eng.boxes.get(name).label, 0, 0);
+        ctx.restore();
         continue;
       }
       const grad = ctx.createRadialGradient(
@@ -703,7 +720,7 @@ class GraphCanvas {
     const zoom = this.scale;
     const candidates = [];
     const add = (name, priority) => {
-      if (name && eng.node(name)) candidates.push({ name, priority });
+      if (name != null && eng.node(name)) candidates.push({ name, priority });
     };
     add(this.selected, 3);
     add(this.rootName, 3);
@@ -734,7 +751,8 @@ class GraphCanvas {
         const node = eng.node(name);
         const p = eng.pos.get(name);
         const r = eng.radiusOfWorld(name);
-        const label = name.length > 24 ? name.slice(0, 23) + "…" : name;
+        const chars = Array.from(node.name);
+        const label = chars.length > 24 ? chars.slice(0, 23).join("") + "…" : node.name;
         const big = (node.degree || 0) >= 8 || name === this.rootName;
         const size = name === this.rootName ? 13 : big ? 12.5 : 11.5;
         ctx.font = `${name === this.rootName ? "700" : "500"} ${size}px ui-sans-serif, system-ui, sans-serif`;
@@ -781,7 +799,7 @@ class GraphCanvas {
     const cancelGesture = () => {
       clearTimeout(longPressTimer);
       pointers.clear();
-      if (dragNode && this.engine) this.engine.setPinned(dragNode, false);
+      if (dragNode != null && this.engine) this.engine.setPinned(dragNode, false);
       dragNode = null;
       panning = false;
     };
@@ -796,8 +814,8 @@ class GraphCanvas {
         const p = posOf(ev);
         const world = this.toWorld(p.x, p.y);
         dragNode = this.engine ? this.engine.pick(world.x, world.y) : null;
-        panning = !dragNode;
-        if (dragNode) {
+        panning = dragNode == null;
+        if (dragNode != null) {
           this.engine.setPinned(dragNode, true);
           longPressTimer = setTimeout(() => {
             this.onNodeAction(dragNode, "tooltip", { x: ev.clientX, y: ev.clientY });
@@ -805,7 +823,7 @@ class GraphCanvas {
         }
       } else if (pointers.size === 2) {
         clearTimeout(longPressTimer);
-        if (dragNode && this.engine) this.engine.setPinned(dragNode, false);
+        if (dragNode != null && this.engine) this.engine.setPinned(dragNode, false);
         dragNode = null;
         const [a, b] = [...pointers.values()];
         pinchDist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
@@ -825,7 +843,7 @@ class GraphCanvas {
         const hover = this.engine ? this.engine.pick(world.x, world.y) : null;
         if (hover !== this.hovered) {
           this.hovered = hover;
-          c.style.cursor = hover ? "pointer" : "grab";
+          c.style.cursor = hover != null ? "pointer" : "grab";
           this.invalidate();
         }
         return;
@@ -850,7 +868,7 @@ class GraphCanvas {
         return;
       }
       if (pointers.size === 1) {
-        if (dragNode && this.engine) {
+        if (dragNode != null && this.engine) {
           const world = this.toWorld(p.x, p.y);
           this.engine.pos.set(dragNode, world);
         } else if (panning) {
@@ -862,7 +880,7 @@ class GraphCanvas {
           const hover = this.engine ? this.engine.pick(world.x, world.y) : null;
           if (hover !== this.hovered) {
             this.hovered = hover;
-            c.style.cursor = hover ? "pointer" : "grab";
+            c.style.cursor = hover != null ? "pointer" : "grab";
           }
         }
       }
@@ -873,7 +891,7 @@ class GraphCanvas {
       clearTimeout(longPressTimer);
       pointers.delete(ev.pointerId);
       const wasTap = ev.button === 0 && movedTotal < 8 && performance.now() - downAt < 250;
-      if (dragNode) {
+      if (dragNode != null) {
         if (this.engine) this.engine.setPinned(dragNode, false);
         if (wasTap) this.onPick(dragNode);
         dragNode = null;

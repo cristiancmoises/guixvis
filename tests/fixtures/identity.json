@@ -1,0 +1,8 @@
+{"header":{"schema":4,"guix_commit":"fixture","generated_ms":"0","package_count":6},"packages":[
+ {"id":0,"name":"root","version":"1","catalog":true,"inputs":[1,2,3,4,5,1],"propagated_inputs":[1],"native_inputs":[1]},
+ {"id":1,"name":"lib","version":"1","catalog":true},
+ {"id":2,"name":"lib","version":"2","catalog":true},
+ {"id":3,"name":"variant","version":"1","catalog":true},
+ {"id":4,"name":"variant","version":"1","catalog":false},
+ {"id":5,"name":"private","version":"1","catalog":false,"inputs":[0]}
+],"diagnostics":[]}

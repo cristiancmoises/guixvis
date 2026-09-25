@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::index::{DepKind, Package};
+use crate::index::Package;
 use crate::theme::Theme;
 
 pub fn draw(f: &mut Frame, app: &App, th: &Theme, area: Rect) {
@@ -52,7 +52,53 @@ pub fn draw(f: &mut Frame, app: &App, th: &Theme, area: Rect) {
         ));
     }
     lines.push(Line::from(header));
+    lines.push(Line::raw(format!(
+        "#{} · {}",
+        pkg.id,
+        if pkg.catalog {
+            "catalog"
+        } else {
+            "private variant"
+        }
+    )));
     lines.push(Line::raw(""));
+
+    if let Some(index) = &app.index {
+        let origin = &index.origin;
+        lines.push(Line::raw(format!(
+            "Guix origin {} · {}",
+            if origin.is_verified() {
+                "verified"
+            } else {
+                "unverified"
+            },
+            if origin.system.is_empty() {
+                "unknown system"
+            } else {
+                &origin.system
+            }
+        )));
+        if !origin.channels.is_empty() {
+            lines.push(Line::raw(
+                origin
+                    .channels
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "{}@{}",
+                            c.name,
+                            c.commit.chars().take(7).collect::<String>()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+            ));
+        }
+        if !origin.executable.is_empty() {
+            lines.push(Line::raw(format!("Guix: {}", origin.executable)));
+        }
+        lines.push(Line::raw(""));
+    }
 
     // Synopsis.
     if !pkg.synopsis.is_empty() {
@@ -97,7 +143,7 @@ pub fn draw(f: &mut Frame, app: &App, th: &Theme, area: Rect) {
         Span::styled("Deps: ", Style::default().fg(th.muted)),
         Span::styled(
             format!(
-                "{} total ({} direct · {} propagated · {} native)",
+                "{} packages ({} input · {} propagated · {} native relations)",
                 counts.0, counts.1, counts.2, counts.3
             ),
             Style::default().fg(th.fg),
@@ -132,15 +178,11 @@ pub fn draw(f: &mut Frame, app: &App, th: &Theme, area: Rect) {
 }
 
 fn dep_counts(app: &App, pkg: &Package) -> (usize, usize, usize, usize) {
-    let (mut total, mut inp, mut prop, mut nat) = (0, 0, 0, 0);
     let _ = app;
-    for (_, kind) in pkg.deps() {
-        total += 1;
-        match kind {
-            DepKind::Input => inp += 1,
-            DepKind::Propagated => prop += 1,
-            DepKind::Native => nat += 1,
-        }
-    }
-    (total, inp, prop, nat)
+    (
+        pkg.dep_count(),
+        pkg.inputs.len(),
+        pkg.propagated.len(),
+        pkg.native.len(),
+    )
 }

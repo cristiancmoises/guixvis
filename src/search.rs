@@ -106,9 +106,25 @@ impl SearchWorker {
         ticket
     }
 
+    /// Invalidate in-flight replies without issuing a replacement query.
+    pub fn invalidate(&self) -> u64 {
+        let ticket = self.ticket.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Ok(mut reply) = self.reply.lock() {
+            *reply = None;
+        }
+        ticket
+    }
+
     /// Take the freshest reply if its ticket is newer than `last`.
     pub fn take_reply(&self, last: u64) -> Option<SearchReply> {
         let mut reply = self.reply.lock().ok()?;
+        if reply
+            .as_ref()
+            .is_some_and(|r| r.ticket != self.ticket.load(Ordering::Relaxed))
+        {
+            *reply = None;
+            return None;
+        }
         if reply.as_ref().map(|r| r.ticket) <= Some(last) {
             return None;
         }

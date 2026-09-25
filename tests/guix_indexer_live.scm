@@ -1,0 +1,40 @@
+;;; Read-only host check: compare exported IDs to independently collected objects.
+(use-modules (gnu packages) (guix packages) (ice-9 match) (srfi srfi-1))
+(load (string-append (dirname (current-filename)) "/../data/guix-index-core.scm"))
+(define seeds (fold-packages cons '()))
+(define graph (collect-package-graph seeds (lambda _ #t)))
+(define objects (vector-ref graph 0))
+(define refs (vector-ref graph 1))
+(define checked 0)
+(define mismatches 0)
+(define private-seen? #f)
+;; This comparator never maps names back to objects or uses the collector's IDs.
+(define (declared-objects value)
+  (match value
+    ((? package? p) (list p))
+    ((a . rest) (append (declared-objects a) (declared-objects rest)))
+    (_ '())))
+(do ((id 0 (+ id 1))) ((= id (vector-length objects)))
+  (let ((p (vector-ref objects id)))
+    (when (member (package-name p) '("emacs" "python" "qtbase" "fontconfig-minimal"))
+      (when (and (string=? (package-name p) "fontconfig-minimal")
+                 (not (hashq-ref (vector-ref graph 2) p #f)))
+        (set! private-seen? #t))
+      (for-each
+       (lambda (accessor slot kind)
+         (let* ((expected (delete-duplicates (declared-objects (accessor p)) eq?))
+                (actual (map (lambda (ref) (vector-ref objects ref))
+                             (vector-ref (vector-ref refs id) slot))))
+           (set! checked (+ checked 1))
+           (unless (and (= (length actual) (length expected))
+                        (every (lambda (object) (memq object actual)) expected))
+             (set! mismatches (+ mismatches 1))
+             (format #t "MISMATCH id=~a ~a@~a ~a expected=~a actual=~a\n"
+                     id (package-name p) (package-version p) kind
+                     (map (lambda (x) (cons (package-name x) (package-version x))) expected)
+                     (map (lambda (x) (cons (package-name x) (package-version x))) actual)))))
+       (list package-inputs package-propagated-inputs package-native-inputs)
+       '(0 1 2) '(input propagated native)))))
+(format #t "Object comparisons: ~a; mismatches: ~a; private fontconfig-minimal: ~a; objects: ~a\n"
+        checked mismatches private-seen? (vector-length objects))
+(exit (if (and (>= checked 12) (zero? mismatches) private-seen?) 0 1))

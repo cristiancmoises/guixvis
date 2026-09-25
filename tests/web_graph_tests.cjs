@@ -30,9 +30,28 @@ function canvas() {
 function interactiveCanvas(options = {}) {
   const listeners = new Map();
   const calls = [];
+  let transform = { sx: 1, sy: 1, tx: 0, ty: 0 };
+  const transforms = [];
   const context = new Proxy({
-    measureText: (text) => { calls.push(["measureText", text]); return { width: [...text].length * 7 }; },
+    measureText: (text) => { calls.push(["measureText", text, context.font]); return { width: [...text].length * 7 }; },
     createRadialGradient: () => ({ addColorStop() {} }),
+    save: () => { transforms.push({ ...transform }); calls.push(["save"]); },
+    restore: () => { transform = transforms.pop(); calls.push(["restore"]); },
+    setTransform: (sx, _b, _c, sy, tx, ty) => {
+      transform = { sx, sy, tx, ty }; calls.push(["setTransform", sx, 0, 0, sy, tx, ty]);
+    },
+    translate: (x, y) => {
+      transform.tx += x * transform.sx;
+      transform.ty += y * transform.sy;
+      calls.push(["translate", x, y]);
+    },
+    scale: (x, y) => {
+      transform.sx *= x;
+      transform.sy *= y;
+      calls.push(["scale", x, y]);
+    },
+    rect: (...args) => calls.push(["rect", ...args, { ...transform }]),
+    fillText: (...args) => calls.push(["fillText", ...args, { font: context.font, transform: { ...transform } }]),
   }, { get: (obj, key) => key in obj ? obj[key] : (...args) => calls.push([key, ...args]) });
   const view = new GraphCanvas({
     getContext: () => context, style: {},
@@ -154,6 +173,49 @@ test("rectangles share bounded cached label geometry with corner picking and zoo
   assert.equal(layout.pick(corner.x, corner.y, 0), name);
 });
 
+test("rectangle lettering uses measured CSS pixel glyphs at fit and zoom on both DPRs", () => {
+  for (const dpr of [1, 2]) {
+    const { view, calls } = interactiveCanvas();
+    view.resize(1440, 960, dpr);
+    const names = ["libx11", "very-long-package-name-".repeat(12)];
+    const layout = new GraphEngine(names.map((name) => ({ name, degree: 1 })), [], { reducedMotion: true });
+    view.setGraph(layout, { root: names[0] });
+    view.setStyle("rectangles");
+    assert.ok(calls.filter((call) => call[0] === "measureText").every(
+      (call) => call[2] === "500 12px ui-sans-serif, system-ui, sans-serif"
+    ));
+    layout.pos.set(names[0], { x: -0.4, y: 0 });
+    layout.pos.set(names[1], { x: 0.4, y: 0 });
+    const fit = view.fitScale();
+
+    for (const zoom of [0.5, 1, 3]) {
+      view.scale = fit * zoom;
+      calls.length = 0;
+      view.paint();
+      const texts = calls.filter((call) => call[0] === "fillText");
+      const rects = calls.filter((call) => call[0] === "rect");
+      assert.equal(texts.length, names.length);
+      assert.equal(rects.length, names.length);
+      names.forEach((name, i) => {
+        const [_, label, x, y, drawing] = texts[i];
+        const box = layout.boxes.get(name);
+        const p = layout.pos.get(name);
+        const rect = rects[i];
+        const pixelsPerLocalUnit = dpr * zoom;
+        assert.equal(drawing.font, "500 12px ui-sans-serif, system-ui, sans-serif");
+        assert.ok(Math.abs(drawing.transform.sx - pixelsPerLocalUnit) < 1e-9);
+        assert.ok(Math.abs(drawing.transform.sy - pixelsPerLocalUnit) < 1e-9);
+        assert.ok(Math.abs(x * drawing.transform.sx + drawing.transform.tx - dpr * (p.x * view.scale + view.tx)) < 1e-9);
+        assert.ok(Math.abs(y * drawing.transform.sy + drawing.transform.ty - dpr * (p.y * view.scale + view.ty)) < 1e-9);
+        assert.ok(Math.abs(rect[3] * rect[5].sx - dpr * zoom * box.width) < 1e-9);
+        assert.ok(([...label].length * 7 + 24) * zoom <= box.width * zoom + 1e-9);
+        assert.ok(box.width <= 200);
+      });
+      assert.ok(texts[1][1].endsWith("…"));
+    }
+  }
+});
+
 test("dense rectangles settle without squeezing their separated extent back into the frame", () => {
   const { view } = interactiveCanvas();
   const nodes = Array.from({ length: 80 }, (_, i) => ({ name: `long-package-name-${i}`, degree: 1 }));
@@ -214,6 +276,36 @@ test("rectangle separation resolves coincident dense nodes even with a short rel
     assert.ok(Math.abs(pa.x - pb.x) >= ba.halfWidth + bb.halfWidth ||
       Math.abs(pa.y - pb.y) >= ba.halfHeight + bb.halfHeight, `${a} overlaps ${b}`);
   }
+});
+
+test("exact graph IDs keep same-name variants apart, including zero", () => {
+  const layout = new GraphEngine([
+    { id: 0, name: "same", version: "1", degree: 1 },
+    { id: 1, name: "same", version: "1", degree: 1 },
+  ], [{ from: "same", to: "same", from_id: 0, to_id: 1 }]);
+  assert.equal(layout.pos.size, 2);
+  assert.ok(layout.pos.has(0));
+  assert.ok(layout.pos.has(1));
+  assert.deepEqual(layout.adj.get(0), [1]);
+  const picked = [];
+  const { view, emit, calls } = interactiveCanvas({ onPick: (id) => picked.push(id) });
+  view.setGraph(layout, { root: 0, selected: 0 });
+  view.setStyle("rectangles");
+  layout.pos.set(0, { x: 0, y: 0 });
+  layout.pos.set(1, { x: 1, y: 1 });
+  view.paint();
+  assert.equal(view.rootName, 0);
+  assert.equal(view.selected, 0);
+  assert.ok(calls.some((c) => c[0] === "fillText" && c[1] === "same"));
+  emit("pointerdown");
+  emit("pointerup");
+  assert.deepEqual(picked, [0]);
+});
+
+test("ambiguous legacy and partially exact graphs are rejected", () => {
+  assert.throws(() => new GraphEngine([{ name: "same" }, { name: "same" }], []));
+  assert.throws(() => new GraphEngine([{ id: 0, name: "a" }, { name: "b" }], []));
+  assert.throws(() => new GraphEngine([{ id: 0, name: "a" }], [{ from: "a", to: "a" }]));
 });
 
 test("node and radius lookups preserve values without scanning names", () => {

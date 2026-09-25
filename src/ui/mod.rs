@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, Phase, Tab};
+use crate::app::{App, InputMode, Phase, Tab};
 use crate::theme::{theme, Theme};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -58,7 +58,12 @@ fn draw_header(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
             spans.push(Span::styled("·", Style::default().fg(th.muted)));
         }
     }
-    if let Some(pkg) = app.selected_pkg() {
+    let displayed_pkg = if app.tab == Tab::RevDeps {
+        app.rev_root_pkg()
+    } else {
+        app.selected_pkg()
+    };
+    if let Some(pkg) = displayed_pkg {
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
             format!("{} {}", pkg.name, pkg.version),
@@ -68,22 +73,47 @@ fn draw_header(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), rows[0]);
 
     // Search row.
-    let cursor = Span::styled("▌", th.tab_active);
-    let query_span = Span::styled(app.query.as_str(), Style::default().fg(th.fg));
+    let cursor = Span::styled(
+        if app.mode == InputMode::Search {
+            "▌"
+        } else {
+            ""
+        },
+        th.tab_active,
+    );
+    let label = match app.tab {
+        Tab::Overview => "Search: ",
+        Tab::Deps => "Filter dependencies: ",
+        Tab::RevDeps => "Filter dependents: ",
+        Tab::Graph => "Filter visible graph: ",
+    };
+    let query = app.active_query();
+    let query_span = Span::styled(query, Style::default().fg(th.fg));
     let placeholder = if app.index.is_none() {
         "index loading — search will unlock…"
-    } else if app.query.is_empty() {
-        "type to search 32,500 packages (name + synopsis)"
-    } else {
+    } else if !query.is_empty() {
         ""
+    } else if app.mode == InputMode::Navigate {
+        "/ to search this tab"
+    } else if matches!(app.tab, Tab::RevDeps | Tab::Deps) {
+        "name + version · all direct and transitive relations"
+    } else if app.tab == Tab::Graph {
+        "name + version · projected nodes only"
+    } else {
+        "type a package name or synopsis"
     };
     let placeholder_span = Span::styled(placeholder, Style::default().fg(th.muted));
-    let line = if app.query.is_empty() {
-        Line::from(vec![Span::raw("Search: "), cursor, placeholder_span])
+    let line = if query.is_empty() {
+        Line::from(vec![Span::raw(label), cursor, placeholder_span])
     } else {
-        Line::from(vec![Span::raw("Search: "), query_span, cursor])
+        Line::from(vec![Span::raw(label), query_span, cursor])
     };
     let block = Block::default()
+        .title(if app.mode == InputMode::Search {
+            " SEARCH · Enter/Esc finish "
+        } else {
+            " NAVIGATE · / search "
+        })
         .borders(Borders::ALL)
         .border_style(th.border);
     f.render_widget(Paragraph::new(line).block(block), rows[1]);
@@ -110,7 +140,11 @@ fn draw_body(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
 fn draw_status(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
     let left = status_left(app, th);
     let right = Span::styled(
-        format!("{} · ? help · q quit · R rebuild", th.name),
+        if app.mode == InputMode::Search {
+            "Enter done · F1 help · Ctrl+C quit".to_string()
+        } else {
+            "/ search · ? help · q quit · R rebuild".to_string()
+        },
         Style::default().fg(th.muted),
     );
     let mut spans = vec![left];
@@ -156,11 +190,22 @@ fn status_left(app: &App, th: &Theme) -> Span<'static> {
                 if *fresh { "fresh" } else { "rebuilt" }
             ));
             if *unkeyed {
-                text.push_str(" · cache unverified (guix describe unavailable)");
+                text.push_str(" · origin unverified");
+            }
+            if !index.is_complete() {
+                text.push_str(&format!(
+                    " · incomplete ({} diagnostics)",
+                    index.diagnostics.len()
+                ));
             }
             text.push_str(&format!(" · {commit}"));
             let count = app.results.len();
-            if count > 0 && !app.query.is_empty() {
+            if app.tab == Tab::Overview && app.search_pending() {
+                Span::styled(
+                    format!("Searching · previous results · {text}"),
+                    Style::default().fg(th.accent),
+                )
+            } else if app.tab == Tab::Overview && count > 0 && !app.query.is_empty() {
                 Span::styled(
                     format!("{count} matches · {text}"),
                     Style::default().fg(th.accent),

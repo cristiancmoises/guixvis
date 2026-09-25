@@ -16,13 +16,16 @@
           const body = await res.json();
           if (body.error) msg = body.error;
         } catch (_) { /* not JSON */ }
-        throw new Error(msg);
+        const error = new Error(msg);
+        error.status = res.status;
+        throw error;
       }
       return res.json();
     },
   };
   const state = {
     name: null,
+    ref: null,
     depth: 2,
     dir: "deps",
     generation: 0,
@@ -77,7 +80,7 @@
   // Reloads and manually edited hashes deliberately start a new boundary.
   const navigation = { session: `${Date.now()}-${Math.random()}`, entries: [], index: -1, pending: false };
   const graph = new GraphCanvas(els.canvas, {
-    onPick: (name) => open(name),
+    onPick: (key) => openGraphNode(key),
     onBack: () => back(),
     onNodeAction: (name, kind, ev) => {
       if (kind === "tooltip") showTooltip(name, ev.x, ev.y, true);
@@ -138,6 +141,31 @@
   });
 
   /* ---------- hash routing ---------- */
+  function packageRef(value) {
+    const ref = typeof value === "string" ? { name: value } : value;
+    if (!ref || typeof ref.name !== "string" || !ref.name) throw new Error("Invalid package reference. Search again.");
+    if (ref.id == null && ref.snapshot == null) return { name: ref.name };
+    if (!Number.isInteger(ref.id) || ref.id < 0 || ref.id > 0xffffffff ||
+        typeof ref.snapshot !== "string" || !/^[a-f0-9]{64}$/.test(ref.snapshot)) {
+      throw new Error("Invalid package identity. Search again.");
+    }
+    return { name: ref.name, id: ref.id, snapshot: ref.snapshot };
+  }
+
+  function refKey(ref) {
+    return ref?.id != null ? `${ref.snapshot}/${ref.id}` : `name/${ref?.name}`;
+  }
+
+  function identityParams(ref) {
+    return new URLSearchParams(ref.id != null ? { id: String(ref.id), snapshot: ref.snapshot } : {});
+  }
+
+  function openGraphNode(key) {
+    const node = graph.engine?.node(key);
+    if (node) open(node);
+    else if (typeof key === "string" && !graph.engine?.exact) open(key);
+  }
+
   function parseHash() {
     const m = /^#\/p\/([^?]+)(?:\?(.*))?$/.exec(location.hash);
     if (!m) return null;
@@ -147,11 +175,22 @@
     catch (_) { return null; }
     const depth = Math.min(8, Math.max(1, parseInt(params.get("depth") || "2", 10) || 2));
     const dir = params.get("dir") === "reverse" ? "reverse" : "deps";
-    return { name, depth, dir };
+    const exact = params.has("id") || params.has("snapshot");
+    if (exact && (params.getAll("id").length !== 1 || params.getAll("snapshot").length !== 1 ||
+        !/^(0|[1-9][0-9]*)$/.test(params.get("id")))) {
+      return { invalid: true };
+    }
+    try {
+      const ref = packageRef(exact ? { name, id: Number(params.get("id")), snapshot: params.get("snapshot") } : name);
+      return { ref, depth, dir };
+    } catch (_) { return { invalid: true }; }
   }
 
-  function canonicalHash(name, depth, dir) {
-    return `#/p/${encodeURIComponent(name)}?depth=${depth}&dir=${dir}`;
+  function canonicalHash(ref, depth, dir) {
+    const params = identityParams(ref);
+    params.set("depth", depth);
+    params.set("dir", dir);
+    return `#/p/${encodeURIComponent(ref.name)}?${params}`;
   }
 
   function updateBack() {
@@ -184,35 +223,38 @@
     history.back();
   }
 
-  function open(name, { keepPositions = true, push = true } = {}) {
-    if (!name || navigation.pending) return;
+  function open(value, { keepPositions = true, push = true } = {}) {
+    if (!value || navigation.pending) return;
+    const ref = packageRef(value);
     const depth = state.depth;
     const dir = state.dir;
-    const url = canonicalHash(name, depth, dir);
+    const url = canonicalHash(ref, depth, dir);
     if (url === navigation.entries[navigation.index] && (state.loaded || state.loading)) {
       if (!state.loading) showSidebar();
       return;
     }
-    state.name = name;
     // Retrying a failed visit must not create a duplicate history entry either.
     if (url !== navigation.entries[navigation.index]) writeHistory(url, push);
-    load(name, keepPositions);
+    load(ref, keepPositions);
   }
 
   /* ---------- loading ---------- */
-  async function load(name, keepPositions, retry = true) {
+  async function load(ref, keepPositions, retry = true) {
+    const { name } = ref;
     if (state.abort) state.abort.abort();
     state.abort = new AbortController();
     const signal = state.abort.signal;
     const request = ++state.request;
     const depth = state.depth;
     const dir = state.dir;
+    const prevPositions = keepPositions && state.ref?.snapshot === ref.snapshot ? state.positions : null;
+    state.ref = ref;
     state.name = name;
     state.loading = true;
     state.loaded = null;
     state.detail = null;
+    state.graphData = null;
     els.pill.hidden = true;
-    const prevPositions = keepPositions ? state.positions : null;
     graph.setSkeleton(true);
     els.status.textContent = `Loading ${name} graph…`;
     closeSidebar();
@@ -233,24 +275,41 @@
     }, 30000);
 
     try {
+      const exact = identityParams(ref);
+      const graphParams = identityParams(ref);
+      graphParams.set("dir", dir);
+      graphParams.set("depth", depth);
       const [detail, graphData] = await Promise.all([
-        api.get(`/api/v1/package/${encodeURIComponent(name)}`, signal),
+        api.get(`/api/v1/package/${encodeURIComponent(name)}${exact.size ? `?${exact}` : ""}`, signal),
         api.get(
-          `/api/v1/graph/${encodeURIComponent(name)}?dir=${dir}&depth=${depth}`, signal
+          `/api/v1/graph/${encodeURIComponent(name)}?${graphParams}`, signal
         ),
       ]);
       clearTimeout(timeout);
       if (signal.aborted || request !== state.request) return;
-      if (detail.generation !== graphData.generation) {
-        if (retry) return load(name, keepPositions, false);
+      if (detail.generation !== graphData.generation || detail.snapshot !== graphData.snapshot) {
+        if (retry && ref.id == null) return load(ref, false, false);
         throw new Error("Package index changed while loading. Select the package again.");
       }
+      const resolved = packageRef(detail);
+      if (detail.name !== name || graphData.root !== name ||
+          (ref.id != null && refKey(resolved) !== refKey(ref)) ||
+          (resolved.id != null && (graphData.root_id !== resolved.id ||
+            !graphData.nodes.every((n) => n.snapshot === resolved.snapshot)))) {
+        throw new Error("Package identity changed. Search and select the package again.");
+      }
+      const sameSnapshot = state.ref?.snapshot === resolved.snapshot;
+      // A legacy deep link resolves once, then every subsequent action is exact.
+      state.ref = resolved;
+      const url = canonicalHash(resolved, depth, dir);
+      navigation.entries[navigation.index] = url;
+      history.replaceState(history.state, "", url);
       state.generation = detail.generation;
+      buildGraph(graphData, sameSnapshot ? prevPositions : null);
       state.detail = detail;
       state.graphData = graphData;
-      state.loaded = { name, depth, dir };
+      state.loaded = { ...resolved, depth, dir };
       renderDetail(detail, graphData);
-      buildGraph(graphData, prevPositions);
       state.loading = false;
       graph.setSkeleton(false);
     } catch (err) {
@@ -258,6 +317,21 @@
       if (signal.aborted || request !== state.request) return;
       state.loading = false;
       if (err.name === "AbortError") return;
+      state.detail = null;
+      state.graphData = null;
+      state.loaded = null;
+      state.positions = new Map();
+      if (err.status === 409) {
+        state.ref = null;
+        state.name = null;
+        navigation.entries = [];
+        navigation.index = -1;
+        updateBack();
+        searchItems = [];
+        searchedQuery = null;
+        els.packageList.replaceChildren();
+        hideResults();
+      }
       els.status.textContent = `✗ ${err.message}`;
       detailEl.innerHTML = "";
       const empty = document.createElement("p");
@@ -270,32 +344,27 @@
   }
 
   function buildGraph(data, prevPositions) {
-    const nodes = data.nodes.map((n) => ({
-      name: n.name,
-      degree: n.degree,
-      depth: n.depth,
-      kind: n.kind,
-    }));
+    const nodes = data.nodes;
     const engine = new GraphEngine(nodes, data.edges, {
       fresh: !prevPositions || prevPositions.size === 0,
       reducedMotion: state.reducedMotion,
     });
     const prev = prevPositions && prevPositions.size ? prevPositions : null;
     if (prev) engine.seedPositions(prev);
-    graph.setGraph(engine, { root: data.root });
+    graph.setGraph(engine, { root: data.root_id ?? data.root });
     graph.dirReverse = data.dir === "reverse";
     // Keep the live positions, including simulation ticks and manual dragging.
     state.positions = engine.pos;
 
     const n = data.nodes.length;
     const e = data.edges.length;
-    els.status.textContent = `Graph of ${data.root} — ${n} nodes, ${e} edges · depth ${state.depth}`;
-    if (data.truncated > 0) {
-      els.pill.hidden = false;
-      els.pill.textContent = `+${data.truncated} beyond the graph limit`;
-    } else {
-      els.pill.hidden = true;
-    }
+    els.status.textContent = `Graph of ${data.root} — ${n} nodes, ${e} edges · depth ${state.depth}${data.complete === false ? " · incomplete index" : ""}`;
+    const limits = [];
+    if (data.truncated > 0) limits.push(`+${data.truncated} beyond the graph limit`);
+    if (data.edges_truncated) limits.push(`${data.edges_truncated} connections not drawn`);
+    if (data.discovery_complete === false || data.edges_total === null) limits.push("Graph limited; total unknown");
+    els.pill.textContent = limits.join(" · ");
+    els.pill.hidden = limits.length === 0;
   }
 
   /* ---------- detail sidebar ---------- */
@@ -317,6 +386,14 @@
       head.append(mk("span", "lic", lic));
     }
     el.append(head);
+    if (d.id != null) el.append(mk("p", "meta", `ID ${d.id} · ${d.catalog ? "catalog" : "private dependency"}`));
+    if (d.complete === false) el.append(mk("p", "meta", `Incomplete index: ${d.diagnostics_count} extraction diagnostics.`));
+    if (d.origin) {
+      const o = d.origin;
+      el.append(mk("p", "meta", `Guix origin ${o.verified ? "verified" : "unverified"} · ${o.system || "unknown system"}`));
+      el.append(mk("p", "meta", `Guix: ${o.executable || "unknown executable"}`));
+      el.append(mk("p", "meta", (o.channels || []).map((c) => `${c.name}@${c.commit}`).join(" · ")));
+    }
 
     if (d.synopsis) el.append(mk("p", "syn", d.synopsis));
     if (d.description) {
@@ -344,8 +421,11 @@
     const actions = mk("section", "pkg-actions");
     actions.append(mk("h2", "sec-title", "Use this package"));
     actions.append(mk("p", "action-help", "Copy a command to review and run in your terminal."));
+    if (d.command_safe === false) actions.append(mk("p", "action-help",
+      "This private or ambiguous variant cannot be identified exactly by a Guix name/version command. The copied command may select a different package; review its definition first."));
     // Guix shell uses -- to begin the command, so validate its package operand.
-    const quoted = "'" + d.name.replace(/'/g, "'\\''") + "'";
+    const operand = d.version ? `${d.name}@${d.version}` : d.name;
+    const quoted = "'" + operand.replace(/'/g, "'\\''") + "'";
     for (const [label, prefix] of [
       ["Install", "guix install"], ["Remove", "guix remove"],
       ["Show", "guix show"], ["Shell", "guix shell"],
@@ -402,13 +482,13 @@
 
     const depsWrap = section("Dependencies");
     for (const dep of d.deps.slice(0, 12)) {
-      depsWrap.append(relChip(dep.name, dep.version, dep.kind));
+      depsWrap.append(relChip(dep));
     }
     if (d.deps.length > 12) depsWrap.append(moreChip(d.deps.length - 12));
 
     const revWrap = section("Dependents");
     for (const dep of d.dependents.slice(0, 12)) {
-      const chip = relChip(dep.name, dep.version);
+      const chip = relChip(dep);
       const cnt = mk("span", "cnt", `⤴${dep.dependents}`);
       chip.append(cnt);
       revWrap.append(chip);
@@ -417,7 +497,7 @@
 
     const modWrap = section("Same module");
     for (const nb of d.module_neighbors.slice(0, 12)) {
-      modWrap.append(relChip(nb.name, nb.version));
+      modWrap.append(relChip(nb));
     }
     if (d.module_neighbors.length > 12) {
       modWrap.append(moreChip(d.module_neighbors.length - 12));
@@ -446,7 +526,8 @@
     }
   }
 
-  function relChip(name, version, kind) {
+  function relChip(ref) {
+    const { name, version, kind } = ref;
     const chip = document.createElement("button");
     chip.className = "rel";
     const nm = document.createElement("span");
@@ -458,10 +539,11 @@
       v.textContent = version;
       chip.append(v);
     }
-    if (kind === "propagated") chip.append(badge("P", "p"));
-    if (kind === "native") chip.append(badge("N", "n"));
-    chip.addEventListener("click", () => open(name));
-    chip.title = `Open ${name}`;
+    const kinds = ref.kinds || [kind];
+    if (kinds.includes("propagated")) chip.append(badge("P", "p"));
+    if (kinds.includes("native")) chip.append(badge("N", "n"));
+    chip.addEventListener("click", () => open(ref));
+    chip.title = `Open ${name}${ref.id != null ? ` · ID ${ref.id}` : ""}`;
     return chip;
   }
 
@@ -519,7 +601,7 @@
 
   function markCurrentPackage() {
     for (const button of els.packageList.querySelectorAll("button")) {
-      if (button.dataset.package === state.name) button.setAttribute("aria-current", "true");
+      if (button.dataset.package === refKey(state.ref)) button.setAttribute("aria-current", "true");
       else button.removeAttribute("aria-current");
     }
   }
@@ -533,7 +615,7 @@
     for (const item of data.items) {
       const li = document.createElement("li");
       const button = document.createElement("button");
-      button.dataset.package = item.name;
+      button.dataset.package = refKey(item);
       const heading = document.createElement("span");
       heading.className = "package-title";
       const name = spanWithMarks(item.name, item.name_spans);
@@ -548,7 +630,7 @@
       meta.className = "package-meta";
       meta.textContent = `${item.deps ?? 0} dependencies · ${item.dependents ?? 0} dependents${item.license ? ` · ${item.license}` : ""}`;
       button.append(heading, synopsis, meta);
-      button.addEventListener("click", () => choosePackage(item.name));
+      button.addEventListener("click", () => choosePackage(item));
       li.append(button);
       els.packageList.append(li);
     }
@@ -651,7 +733,7 @@
         }
         li.addEventListener("mousedown", (ev) => {
           ev.preventDefault();
-          choosePackage(item.name);
+          choosePackage(item);
         });
         els.results.appendChild(li);
       });
@@ -696,7 +778,7 @@
       renderResults();
     } else if (ev.key === "Enter" && !els.results.hidden && searchItems[searchIndex]) {
       ev.preventDefault();
-      choosePackage(searchItems[searchIndex].name);
+      choosePackage(searchItems[searchIndex]);
     } else if (ev.key === "Escape") {
       hideResults();
     }
@@ -718,7 +800,7 @@
     if (state.depth < 8) {
       state.depth += 1;
       els.depthVal.textContent = state.depth;
-      if (state.name) open(state.name, { push: true });
+      if (state.ref) open(state.ref, { push: true });
     }
   });
   els.depthMinus.addEventListener("click", () => {
@@ -726,7 +808,7 @@
     if (state.depth > 1) {
       state.depth -= 1;
       els.depthVal.textContent = state.depth;
-      if (state.name) open(state.name, { push: true });
+      if (state.ref) open(state.ref, { push: true });
     }
   });
   els.dirBtn.addEventListener("click", () => {
@@ -734,7 +816,7 @@
     state.dir = state.dir === "deps" ? "reverse" : "deps";
     els.dirBtn.textContent = state.dir === "deps" ? "deps ▾" : "reverse ▾";
     els.dirBtn.classList.toggle("active", state.dir === "reverse");
-    if (state.name) open(state.name, { push: true });
+    if (state.ref) open(state.ref, { push: true });
   });
   els.copyLink.addEventListener("click", async () => {
     try {
@@ -752,30 +834,38 @@
   function followHash() {
     const parsed = parseHash();
     navigation.pending = false;
-    if (!parsed) {
+    if (!parsed || parsed.invalid) {
       navigation.entries = [];
       navigation.index = -1;
       if (state.abort) state.abort.abort();
       state.request += 1;
       state.loading = false;
+      state.ref = null;
+      state.name = null;
+      state.detail = null;
+      state.loaded = null;
+      state.graphData = null;
+      graph.setGraph(null, {});
+      closeSidebar();
+      if (parsed?.invalid) els.status.textContent = "Invalid package identity. Search again.";
       updateBack();
       return;
     }
-    const url = canonicalHash(parsed.name, parsed.depth, parsed.dir);
+    const url = canonicalHash(parsed.ref, parsed.depth, parsed.dir);
     const marker = history.state && history.state.guixvis;
     if (marker && marker.session === navigation.session &&
         Number.isInteger(marker.index) && navigation.entries[marker.index] === url) {
       navigation.index = marker.index;
       updateBack();
     } else writeHistory(url, false);
-    if (parsed.name !== state.name || parsed.depth !== state.depth || parsed.dir !== state.dir ||
+    if (refKey(parsed.ref) !== refKey(state.ref) || parsed.depth !== state.depth || parsed.dir !== state.dir ||
         (!state.loading && !state.loaded)) {
       state.depth = parsed.depth;
       state.dir = parsed.dir;
       els.depthVal.textContent = state.depth;
       els.dirBtn.textContent = state.dir === "deps" ? "deps ▾" : "reverse ▾";
       els.dirBtn.classList.toggle("active", state.dir === "reverse");
-      load(parsed.name, true);
+      load(parsed.ref, true);
     }
   }
   window.addEventListener("popstate", followHash);
@@ -796,16 +886,16 @@
   els.canvas.addEventListener("keydown", (ev) => {
     const names = graph.engine ? graph.engine.names : [];
     if (!names.length) return;
-    const idx = graph.selected ? names.indexOf(graph.selected) : -1;
+    const idx = graph.selected != null ? names.indexOf(graph.selected) : -1;
     if (ev.key === "ArrowRight" || ev.key === "ArrowDown") {
       ev.preventDefault();
       graph.selectNode(names[(idx + 1) % names.length]);
     } else if (ev.key === "ArrowLeft" || ev.key === "ArrowUp") {
       ev.preventDefault();
       graph.selectNode(names[(idx - 1 + names.length) % names.length]);
-    } else if (ev.key === "Enter" && graph.selected) {
+    } else if (ev.key === "Enter" && graph.selected != null) {
       ev.preventDefault();
-      open(graph.selected);
+      openGraphNode(graph.selected);
     }
   });
 
@@ -817,11 +907,11 @@
     clearTimeout(tooltipTimer);
     els.tooltip.innerHTML = "";
     const b = document.createElement("b");
-    b.textContent = name;
+    b.textContent = node.name;
     els.tooltip.append(b);
     const syn = document.createElement("div");
     syn.className = "tt-syn";
-    syn.textContent = `degree ${node.degree} · depth ${node.depth}`;
+    syn.textContent = `${node.version || ""}${node.id != null ? ` · ID ${node.id}` : ""} · degree ${node.degree} · depth ${node.depth}`;
     els.tooltip.append(syn);
     els.tooltip.hidden = false;
     const rect = els.tooltip.getBoundingClientRect();
@@ -835,7 +925,7 @@
   }
 
   els.canvas.addEventListener("mousemove", (ev) => {
-    if (!graph.engine || !graph.hovered) return;
+    if (!graph.engine || graph.hovered == null) return;
     showTooltip(graph.hovered, ev.clientX, ev.clientY, false);
   });
   els.canvas.addEventListener("pointerleave", () => {
@@ -852,6 +942,7 @@
       if (health.guix_commit) {
         els.commit.textContent += ` · ${health.guix_commit.slice(0, 7)}`;
       }
+      if (health.origin_verified === false) els.commit.textContent += " · origin unverified";
     } else if (health.phase === "loading") {
       els.commit.textContent = `indexing… ${health.done}/${health.total || "?"}`;
       setTimeout(boot, 1500);
@@ -862,13 +953,17 @@
     }
 
     const parsed = parseHash();
+    if (parsed?.invalid) {
+      els.status.textContent = "Invalid package identity. Search again.";
+      return;
+    }
     if (parsed) {
       state.depth = parsed.depth;
       state.dir = parsed.dir;
       els.depthVal.textContent = parsed.depth;
       els.dirBtn.textContent = state.dir === "deps" ? "deps ▾" : "reverse ▾";
       els.dirBtn.classList.toggle("active", state.dir === "reverse");
-      open(parsed.name, { keepPositions: false, push: false });
+      open(parsed.ref, { keepPositions: false, push: false });
     } else {
       // No deep link: open a hub package so the canvas is never empty.
       open("emacs", { keepPositions: false, push: false });

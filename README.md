@@ -6,24 +6,12 @@ package, see everything **related** to it, with fast fuzzy search and a
 polished, keyboard-first interface.
 
 [Português brasileiro](README.pt-BR.md) · [User guide](docs/usage.md) ·
-[Changes in 0.7.0](docs/releases/0.7.0.md) · [Security](SECURITY.md)
+[Changes in 0.8.0](docs/releases/0.8.0.md) · [Security](SECURITY.md)
 
-Version 0.7.0 keeps the selected package steady while you browse its terminal
-trees, lets a followed graph retain its root and depth, and adds safer Back
-navigation and two persistent, labeled graph styles in the browser.
-
-```
-┌─ Search: emac▌────────────────────────────────────────────────┐
-│  [Overview(1)] [Dependencies(2)] [Reverse deps(3)] [Graph(4)] │
-│ ┌───────────────────────────┐ ┌──────────────────────────────┐│
-│ │ ▶ emacs  30.2  GPL 3+     │ │ GNU Emacs is an extensible…   ││
-│ │   emacs-minimal  30.2     │ │                              ││
-│ │   emacs-next  31.0        │ │ Home: gnu.org/software/emacs  ││
-│ │   (fuzzy match highlights)│ │ File: gnu/packages/emacs.scm:591│
-│ └───────────────────────────┘ └──────────────────────────────┘│
-│ 157 matches · 32500 pkgs · cache fresh (e343ff0) · ? help      │
-└───────────────────────────────────────────────────────────────┘
-```
+Version 0.8.0 keeps the same package selected across tabs, searches the full
+dependency and reverse-dependency closures, and starts the terminal graph at
+one hop. Different versions and private Guix package variants stay distinct
+throughout the terminal, browser, and Emacs client.
 
 ## A note from the author
 
@@ -43,17 +31,16 @@ whatever does not suit you.
   list answers questions instead of just ranking names.
 - **Package details** — version, description, licenses, homepage, and the
   source location (`gnu/packages/emacs.scm:591`).
-- **Dependencies** — expandable tree of inputs (`P` propagated, `N` native),
-  with dependent counts per node (`⤴ 12`).
-- **Reverse dependencies** — "who depends on this package": direct list plus
-  a depth-limited transitive section.
-- **Dependency graph** — force-directed layout (hand-rolled Fruchterman–
-  Reingold, deterministic); follow nodes with Enter, keep the chosen depth
-  across tabs, and press `g` to return to the Overview package.
-- **Instant startup on later runs** — the index is cached as a binary
-  snapshot and automatically rebuilt when your Guix channel commit changes;
-  the empty search box browses the highest-fan-in hubs instead of the
-  alphabet.
+- **Dependencies and reverse dependencies** — expandable trees plus local
+  name/version filters over all reachable package objects. Ordinary (`I`),
+  propagated (`P`), and native (`N`) inputs are included.
+- **Dependency graph** — a one-hop terminal view with focused edges, a
+  selectable package list, and complete selected-package details. Follow nodes
+  with Enter or increase depth as needed.
+- **Cached startup** — a binary snapshot avoids repeating extraction. Its
+  origin records the selected Guix launcher, system, and all channel commits;
+  an empty global search browses high-fan-in packages.
+
 - **Zero configuration** — works on any GNU Guix system; first run builds the
   index in the background with live progress.
 - **Package commands** — preview and copy `guix install`, `guix remove`,
@@ -62,13 +49,11 @@ whatever does not suit you.
 
 ## Screenshots
 
-Terminal search and package details:
+Captured from the locally installed 0.8.0 build, using the real Guix index.
 
-![Guixvis 0.7 terminal Overview with search results and package details](assets/guixvis-tui-overview-0.7.png)
+![Guixvis 0.8 terminal search with distinct Emacs versions](assets/guixvis-tui-overview-0.8.0.png)
 
-Terminal dependency graph:
-
-![Guixvis 0.7 terminal graph with package labels](assets/guixvis-tui-graph-0.7.png)
+![Guixvis 0.8 one-hop terminal graph beside its package list](assets/guixvis-tui-graph-0.8.0.png)
 
 ## Web UI
 
@@ -76,8 +61,9 @@ Terminal dependency graph:
 <http://127.0.0.1:8787>: the fuzzy search box on top, the package detail
 panel with clickable related-package chips, and the interactive graph where
 every bubble is a package — click one to open its view. Deep links
-(`#/p/emacs?depth=2&dir=reverse`) are shareable and work with the browser
-back button. Right-click the canvas or use its visible **Back** button to
+include a package ID and snapshot token, so same-name variants do not get
+mixed up. Old name-only links still work; exact links from a replaced snapshot
+ask you to search again. Links refer to a local service, not a public catalog. Right-click the canvas or use its visible **Back** button to
 return one Guixvis graph step, restoring its package, depth, and direction.
 At the first in-app view, Back is disabled and cannot leave the site. The
 layout works on phone sizes. Result rows carry
@@ -97,11 +83,11 @@ Hover a node or select it with the keyboard to inspect it. Drag with the
 primary mouse button to move a node, drag the background to pan, scroll to
 zoom, or pinch to zoom on touch screens. These gestures do not follow a package.
 
-![Guixvis 0.7 web graph with labeled bubbles](assets/guixvis-web-bubbles-0.7.png)
+![Guixvis 0.8 web graph with bubbles](assets/guixvis-web-bubbles-0.8.0.png)
 
-![Guixvis 0.7 web graph with labeled rectangles](assets/guixvis-web-rectangles-0.7.png)
+![Guixvis 0.8 web rectangles at 100% browser zoom](assets/guixvis-web-rectangles-0.8.0.png)
 
-![Guixvis 0.7 responsive web view on a narrow screen](assets/guixvis-web-mobile-0.7.png)
+![Guixvis 0.8 Python dependencies on a narrow screen](assets/guixvis-web-mobile-0.8.0.png)
 
 ## Themes
 
@@ -110,7 +96,7 @@ Both interfaces ship with nine selectable color themes: **dark** (TUI default),
 **catppuccin-mocha** and **tron** — the last one is pure black with neon
 bubbles, which is what you want on an OLED panel at night.
 
-- TUI: press `T` to cycle (the active theme is shown in the status bar);
+- TUI: in Navigate mode, press `T` to cycle (the active theme is shown in the status bar);
   the choice is saved to `$XDG_CONFIG_HOME/guixvis/theme` (normally
   `~/.config/guixvis/theme`). Use `guixvis --theme nord` for a one-run override.
   `NO_COLOR` is honored with a grayscale fallback.
@@ -164,19 +150,19 @@ Source releases are available as `guixvis-<version>.zupt`, a
 [zupt](https://git.securityops.com.br/cristiancmoises/zupt) archive written with
 the maximum compression level and **no password**, so anyone can open it.
 Once published, download the archive and `SHA256SUMS` from the
-[0.7.0 release](https://codeberg.org/berkeley/guixvis/releases/tag/v0.7.0), then:
+[0.8.0 release](https://codeberg.org/berkeley/guixvis/releases/tag/v0.8.0), then:
 
 ```sh
 sha256sum -c SHA256SUMS
-zupt test    guixvis-0.7.0.zupt    # verify archive integrity
-zupt list    guixvis-0.7.0.zupt    # inspect paths before extracting
-zupt extract guixvis-0.7.0.zupt    # creates ./guixvis-0.7.0/
+zupt test    guixvis-0.8.0.zupt    # verify archive integrity
+zupt list    guixvis-0.8.0.zupt    # inspect paths before extracting
+zupt extract guixvis-0.8.0.zupt    # creates ./guixvis-0.8.0/
 ```
 
 Then build it the normal way:
 
 ```sh
-cd guixvis-0.7.0
+cd guixvis-0.8.0
 cargo build --locked --release --features web
 ```
 
@@ -224,100 +210,91 @@ guixvis --help       all options
 
 ### Keymap
 
+The header tells you whether you are in **Search** or **Navigate** mode.
+Overview starts in Search. Press `/` to search from any tab; every printable
+character is input there, including command letters and digits. `Enter` or
+`Esc` finishes editing without following a row or clearing your query.
+
 | Key | Action |
 |---|---|
-| type | fuzzy search (always live) |
-| `Esc` | clear search / back out |
-| `Tab` / `Shift+Tab` | cycle tabs |
-| `1`–`4` | jump to tab (Overview, Dependencies, Reverse deps, Graph) |
-| `↑` `↓` (or `j` `k` with empty search) | move the current tab's cursor |
-| `PgUp` / `PgDn` | page the current list or tree |
-| `Enter` | expand/collapse tree row · follow graph node |
-| `d` / `r` / `v` (empty search) | open dependencies / reverse deps / graph |
-| `h` / `l` or `←` / `→` | collapse / expand tree node |
-| `+` / `−` | graph depth (1–8) |
-| `g` / `G` (empty search) | top / bottom of list or tree (`g` in graph: refocus on Overview package) |
-| `o` (empty search) | open homepage in `$BROWSER`/`xdg-open` |
-| `T` | cycle and save theme (9 palettes) |
-| `R` | rebuild the index in the background |
-| `?` | help |
-| `q` (empty search) / `Ctrl+C` | quit |
-
-Command letters (`d`, `r`, `v`, `j`, `k`, `g`, `G`, `q`, `o`, `+`, `−`, `1`–`4`)
-act only while the search box is empty, so typing is never hijacked; use the
-arrow keys to navigate while typing.
+| `Tab` / `Shift+Tab` | change tabs in either mode |
+| arrows, `PgUp` / `PgDn` | move the current list's cursor |
+| `Ctrl+U` | clear the current tab's query |
+| `F1` / `Ctrl+C` | help / quit in either mode |
+| `/` | enter Search from Navigate |
+| `1`–`4`, `d` / `r` / `v` | choose a tab in Navigate |
+| `Enter` | expand a tree row or follow a graph node in Navigate |
+| `Esc` | in Navigate: clear the local filter first, then return through graph history |
+| `+` / `−` | graph depth, 1–8, in Navigate |
+| `e` / `l` | graph edge mode / canvas labels in Navigate |
+| `[` / `]` | scroll the selected graph package's details |
+| `g` | refocus the graph on the Overview package |
+| `T` / `R` / `o` | theme / rebuild / homepage in Navigate |
+| `?` / `q` | help / quit in Navigate |
 
 ### Tabs
 
-1. **Overview** — result list + detail pane.
-2. **Dependencies** — expandable tree of what the Overview package needs.
-3. **Reverse deps** — direct dependents (expandable) + transitive section
-   (depth 2+, press Enter on the section header to open it).
-4. **Graph** — force-directed dependency graph; Enter follows a node,
-   `+`/`−` adjusts depth, and `g` returns the root to the Overview package.
+1. **Overview** searches the catalog with fuzzy name/synopsis matching.
+2. **Dependencies** searches every reachable dependency of the selected
+   package, including private variants and all three input categories.
+3. **Reverse deps** searches the full reverse closure in this index.
+4. **Graph** filters the currently projected nodes; it is not a whole-closure
+   search. Use the dependency tabs for that.
 
-The search text stays visible in the bordered header, including at narrow
-terminal widths. Moving through a dependency tree changes only that tree's
-row. Your Overview package stays selected when you switch tabs. Following a
-graph node changes the graph root; that root and its depth survive drawing and
-tab switches until you choose a new Overview result or press `g` in the graph.
+Local filters use case-insensitive literal words against name and version;
+every word must match. They do not use Overview's fuzzy ranking. Each tab keeps
+its own query and cursor. Moving down a dependency list does not change the
+Overview package. Choosing a different Overview result resets its related views.
+
+The tree distinguishes repeated paths and cycles. Filtering searches the full
+closure even when rows are collapsed or the normal expanded-row view is capped.
+Direct dependencies are never hidden by that expanded-row cap.
 
 ## How it works
 
-On startup guixvis either loads its cache or spawns `guix repl` with an
-embedded Guile script (`data/guix-index.scm`) that walks all packages via
-`fold-packages`, extracts name/version/synopsis/description/licenses/location
-and the dependency edges, and streams one JSON document to stdout (progress
-lines on stderr). The Rust side validates the document, resolves the
-dependencies, computes reverse dependency edges, and stores the index in
-memory. A binary snapshot of that resolved index is then written under:
+On startup Guixvis loads its snapshot or runs the embedded Guile indexer.
+It starts with `fold-packages`, then follows the actual package objects in
+`inputs`, `propagated-inputs`, and `native-inputs`. Same-name objects are
+not merged. Private variants reached through inputs remain visible.
 
-```
-~/.cache/guixvis/index-v4.bin
-```
+These are declared package inputs for the selected Guix system, not a store
+closure, derivation graph, cross-compilation plan, or list of installed packages.
+Extraction failures produce diagnostics and an incomplete-index warning rather
+than silently pretending every edge was resolved.
 
-The snapshot exists because parsing the indexer's JSON on every start cost more
-than everything else in the program put together; see the benchmark numbers
-below. It is written to a temp file and renamed into place, so a crash mid-write
-cannot leave a half-written cache behind.
+The binary cache lives at `~/.cache/guixvis/index-v5.bin` (or under
+`$XDG_CACHE_HOME`). It is written atomically. Version 0.8 rebuilds once and leaves
+the older v4 cache untouched. Corrupt snapshots are quarantined, not deleted.
 
-The cache is keyed on your Guix channel commit (from `guix describe`); when
-Guix is updated the cache is rebuilt automatically. A corrupt cache is
-quarantined (renamed, never silently deleted) and rebuilt.
-
-Notes on the original design spec: the `egraph` crate name was evaluated for
-the graph layout, but the crate published under that name is an unrelated
-ML binary, so the layout is a hand-rolled deterministic Fruchterman–Reingold;
-reverse edges are computed in Rust (not Guile) so they are unit-testable.
+Guix selection follows `GUIX` (profile or executable), then `PATH`, then the
+standard profile locations. Launcher symlinks are preserved: resolving them
+can lose Guix channel extensions. Cache origin includes that invocation path,
+the system, and sorted channel names/commits. If origin cannot be verified,
+or `GUIX_PACKAGE_PATH` supplies mutable local modules, the UI says so.
+Package IDs are meaningful only together with their snapshot token.
 
 ## Reading the graph
 
-The graph used to be a field of identical dots — technically a graph, useless as
-a picture — and then it was a readable picture that still looked like tangled
-yarn. It is now calm as well: small dots, edges faded into the background, and
-only the labels that earn their space.
+The terminal starts at depth **1**, with edges focused on the selected
+package. This keeps the first view readable without pressing `−` repeatedly.
+Fine Unicode dots keep the canvas edges light. Wide terminals show a canvas
+beside a navigable package list; narrow ones use
+the list alone. Complete selected names and versions wrap in the details area.
+Use `[` and `]` if those details need scrolling.
 
-- **Small bubbles.** Nodes are dots; hubs grow just enough to be findable, so
-  two hundred of them stop looking like a smear.
-- **Size** is fan-in plus fan-out.
-- **Colour** follows BFS depth: bright for the root, plain for direct
-  dependencies, progressively dimmer for deeper ones.
-- **Hue** marks the kind of edge that pulled a package in: propagated inputs
-  lean purple, native inputs lean amber, ordinary inputs stay blue.
-- **Selection** gets a halo, its neighbours brighten, everything else fades
-  back — handy in a dense cluster.
-- **Labels** are drawn for the selection, the root and the biggest hubs that fit
-  the terminal width. On narrow terminals, the root and selection take priority.
-- The header reports nodes, edges, hidden nodes and how long the layout took;
-  the footer shows the selected package with its dependency counts.
+`Enter` follows the selected package. `Esc` first leaves Search, then clears
+a filter, then returns through graph history. `g` restores the Overview anchor.
+Depth, selection, and local query survive tab changes.
 
-- **Edge modes.** `e` cycles all edges (faded) → only the edges at the selection
-  → no edges at all. `l` toggles hub labels. Whatever mode is active is spelled
-  out in the footer, so nobody has to guess why the picture changed.
+`e` cycles focused, all, and no edges; `l` toggles canvas labels. The list
+remains available even when labels cannot fit. Its `I/P/N` badges retain all
+input categories encountered during discovery.
 
-Keys: `Enter` follows the selected node, `+`/`−` change depth, `g` refocuses the
-root, `e` cycles edge modes, `l` toggles labels, `1`–`4` (or `Tab`) switch tabs,
-`T` cycles themes.
+Graphs are intentionally bounded: 200 nodes **including the root**, 3,000
+edges, and a traversal-work limit. Counts distinguish displayed, omitted, and
+unknown totals. An unknown total is not shown as zero. For a complete relation
+search, use Dependencies or Reverse deps. The web graph still defaults to
+depth 2.
 
 ## Performance
 
@@ -325,26 +302,15 @@ Run `cargo run --release --example bench` to measure cache loading, search,
 and graph layout on your machine. `node examples/bench-web.cjs` measures the
 browser's graph layout code separately.
 
-The table below records measurements from earlier releases on a 32,500-package
-index. Your channel, machine, and cache state affect the result; these are not
-latency guarantees. See the [0.7.0 notes](docs/releases/0.7.0.md) for this
-release's changes and verification.
+On this machine, a release build over 41,746 objects from eight channels
+measured 8.73 s for extraction and 109 ms to decode the 18.6 MB snapshot.
+Eight search queries averaged 2.63 ms (best of 20 runs per query, 500-hit cap).
+The sampled 200-node layouts took about 13–15 ms for 300 iterations.
 
-| Step | Time | Notes |
-|---|---|---|
-| Index build (`guix repl` + Guile) | **3.7 s** | only when the cache is missing or your channel moved |
-| Cache load → usable index | **30 ms** | binary snapshot, 32,500 packages (was ~126 ms with gzipped JSON) |
-| Fuzzy search, 500 hits | **~3 ms** | nucleo over name + synopsis; several terms are AND-ed and ranked as their geometric mean |
-| Graph layout, 200 nodes | **≤10 ms** | deterministic Fruchterman–Reingold, 300 iterations |
-| Graph API payload | **33 KB → 4.8 KB** | gzipped when the browser asks for it |
-
-The indexer is fast enough that parallelising it would buy little; the cache
-format is where the time was, so that is where it was spent. A uniform-grid
-approximation of the layout was implemented, measured 25% slower than the exact
-pairwise loop at the 200-node cap, and removed again — the comment in
-`src/graph.rs` records the numbers so nobody re-adds it on a hunch. The snapshot lives
-at `~/.cache/guixvis/index-v4.bin`, is written atomically, and is keyed on your
-Guix commit.
+These are local measurements, not latency guarantees or a like-for-like
+speedup claim against older indexes. Version 0.8 retains more objects and exact
+identities. Relation traversal and terminal graph layout run outside drawing,
+so changing a filter does not recompute a layout in the render loop.
 
 ## Security
 
@@ -360,7 +326,7 @@ deliberately boring about reachability:
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Resource-Policy` and `Cache-Control: no-store` on the API;
 - validates package names from the URL, caps search queries at 200 characters,
-  depth at 1–8 and graphs at 200 related nodes plus the root, with a bounded
+  depth at 1–8 and graphs at 200 nodes including the root, with a bounded
   concurrency of four;
 - writes the embedded Guile script into a private `0700` directory as a `0600`
   file (the system temp directory is world-writable), and refuses absurdly large
@@ -380,7 +346,7 @@ cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features            # unit + fixture + web tests
 node --test tests/web_graph_tests.cjs tests/web_app_tests.cjs  # browser graph and app logic
-emacs -Q --batch -L elisp -l elisp/guixvis-tests.el -f ert-run-tests-batch-and-exit
+emacs -Q --batch -L elisp -l elisp/guixvis.el -l elisp/guixvis-tests.el -f ert-run-tests-batch-and-exit
 cargo test --test live_guix_tests -- --ignored   # live tests against real Guix
 cargo test --release --test live_guix_tests real_index_search_latency -- --ignored
 ```
@@ -398,10 +364,10 @@ fuzzy search worker), `src/indexer.rs` (`guix repl` subprocess), `src/cache.rs`
   it finishes in seconds on warm caches and a few minutes cold. Progress is
   shown live; the UI stays usable afterwards.
 - **Stale data after `guix pull`** — restart guixvis; the cache is rebuilt
-  automatically because the channel commit changed.
+  automatically when its verified origin changes.
 - **No colors** — `NO_COLOR` is honored (grayscale theme).
-- **Kill a stuck indexer** — press `R` to start over, or delete
-  `~/.cache/guixvis/` and restart.
+- **Kill a stuck indexer** — leave Search and press `R`, or restart with
+  `guixvis --rebuild`. Inspect the reported error before removing any cache.
 
 ## License
 

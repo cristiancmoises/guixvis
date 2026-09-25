@@ -9,6 +9,64 @@ use guixvis::search::dependents_by_name;
 use common::load_fixture;
 
 #[test]
+fn exact_numeric_ids_preserve_versions_and_private_variants() {
+    let doc: IndexDoc = serde_json::from_str(include_str!("fixtures/identity.json"))
+        .expect("numeric identity document parses");
+    let index = Index::from_doc(doc, 0).expect("exact identity document validates");
+    assert_eq!(index.packages[0].inputs.as_ref(), &[1, 2, 3, 4, 5]);
+    assert_eq!(index.packages[0].propagated.as_ref(), &[1]);
+    assert_eq!(index.packages[0].native.as_ref(), &[1]);
+    assert_eq!(index.packages[0].dep_count(), 5);
+    assert_eq!(index.names["variant"], 3);
+    assert_eq!(index.dependents[1].as_ref(), &[0]);
+    assert_eq!(index.packages[0].relation_count(), 7);
+    assert_eq!(
+        index.packages[0].dep_kinds(1),
+        vec![
+            guixvis::index::DepKind::Input,
+            guixvis::index::DepKind::Propagated,
+            guixvis::index::DepKind::Native,
+        ]
+    );
+    assert!(!index.packages[4].catalog);
+    assert!(index.is_complete());
+}
+
+#[test]
+fn shuffled_ids_are_sorted_and_catalog_wins_legacy_lookup() {
+    let mut doc: IndexDoc = serde_json::from_str(include_str!("fixtures/identity.json")).unwrap();
+    doc.packages[3].catalog = false;
+    doc.packages[4].catalog = true;
+    doc.packages.reverse();
+    let index = Index::from_doc(doc, 0).unwrap();
+    assert_eq!(index.names["variant"], 4);
+    for (id, package) in index.packages.iter().enumerate() {
+        assert_eq!(package.id as usize, id);
+    }
+}
+
+#[test]
+fn diagnostics_and_identity_survive_binary_round_trip() {
+    let mut doc: IndexDoc = serde_json::from_str(include_str!("fixtures/identity.json")).unwrap();
+    doc.diagnostics.push(guixvis::model::IndexDiagnostic {
+        package_id: 0,
+        kind: "native".into(),
+        code: "accessor-failed".into(),
+        message: "Could not read inputs".into(),
+    });
+    let index = Index::from_doc(doc, 0).unwrap();
+    let bytes = guixvis::blob::encode(&index);
+    let loaded = guixvis::blob::decode(&bytes, 1).unwrap();
+    assert!(!loaded.is_complete());
+    assert_eq!(index.diagnostics, loaded.diagnostics);
+    assert!(!loaded.packages[4].catalog);
+    assert_eq!(loaded.packages[0].relation_count(), 7);
+    let mut trailing = bytes;
+    trailing.push(0);
+    assert!(guixvis::blob::decode(&trailing, 0).is_err());
+}
+
+#[test]
 fn parses_fixture() {
     let index = load_fixture();
     assert_eq!(index.len(), 10);
@@ -164,8 +222,42 @@ fn rejects_bad_documents() {
     empty.packages[0].name = String::new();
     assert!(Index::from_doc(empty, 0).is_err());
 
-    // Unknown dep names are dropped, not fatal.
-    doc.packages[0].inputs.push("nonexistent".to_string());
-    let index = Index::from_doc(doc, 0).expect("unknown dep tolerated");
-    assert_eq!(index.packages[0].inputs.len(), 2);
+    // Unknown identities are structural corruption, never silent omissions.
+    doc.packages[0].inputs.push(99);
+    assert!(Index::from_doc(doc, 0).is_err());
+}
+
+#[test]
+fn untrusted_text_is_safe_in_both_document_and_blob_paths() {
+    let mut doc: IndexDoc = serde_json::from_str(include_str!("fixtures/small.json")).unwrap();
+    doc.packages[0].name = "emacs\u{1b}]52;c;payload\u{7}".into();
+    doc.packages[0].synopsis = "line\nnext\tword\u{1b}[31m".into();
+    doc.header.origin = guixvis::model::GuixOrigin {
+        executable: "/bin/guix\u{1b}".into(),
+        system: "x86_64-linux\u{7}".into(),
+        channels: vec![guixvis::model::ChannelPin {
+            name: "guix\u{9b}".into(),
+            commit: "abc".into(),
+        }],
+        verified: true,
+        mutable_package_path: false,
+    };
+    doc.diagnostics.push(guixvis::model::IndexDiagnostic {
+        package_id: 0,
+        kind: "input\u{1b}".into(),
+        code: "fail\u{7}".into(),
+        message: "oops\u{9b}31m".into(),
+    });
+    let mut index = Index::from_doc(doc, 0).unwrap();
+    assert!(!index.packages[0].name.chars().any(char::is_control));
+    assert!(!index.diagnostics[0].message.chars().any(char::is_control));
+    assert!(!index.origin.is_verified());
+    assert!(!index.origin.executable.chars().any(char::is_control));
+    assert!(!index.origin.system.chars().any(char::is_control));
+    assert!(!index.origin.channels[0].name.chars().any(char::is_control));
+    index.packages[0].name = std::sync::Arc::from("evil\u{1b}\u{7}");
+    index.packages[0].inputs = vec![1, 1].into();
+    let decoded = guixvis::blob::decode(&guixvis::blob::encode(&index), 0).unwrap();
+    assert!(!decoded.packages[0].name.chars().any(char::is_control));
+    assert_eq!(decoded.packages[0].inputs.as_ref(), &[1]);
 }
