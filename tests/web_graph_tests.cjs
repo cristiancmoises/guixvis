@@ -42,7 +42,8 @@ function interactiveCanvas(options = {}) {
   }, options);
   view.resize(600, 400, 1);
   const emit = (type, values = {}) => listeners.get(type)({
-    pointerId: 1, button: 0, clientX: 300, clientY: 200, preventDefault() {}, ...values,
+    pointerId: 1, button: 0, buttons: type === "pointerup" ? 0 : 1,
+    clientX: 300, clientY: 200, preventDefault() {}, ...values,
   });
   return { view, emit, calls };
 }
@@ -72,6 +73,38 @@ test("only primary gestures pick or drag; context menu requests one back", () =>
   emit("pointerup", { clientX: 340 });
   assert.ok(layout.pos.get("root").x > 0);
   assert.equal(picked.length, 1);
+});
+
+test("mouse button chords stop dragging when the primary button is released", () => {
+  const picked = [];
+  const { view, emit } = interactiveCanvas({ onPick: (name) => picked.push(name) });
+  const layout = new GraphEngine([{ name: "root", degree: 1 }], []);
+  view.setGraph(layout);
+  layout.pos.set("root", { x: 0, y: 0 });
+  emit("pointerdown", { buttons: 1 });
+  // Browsers report intermediate chord presses/releases as pointermove.
+  emit("pointermove", { button: 2, buttons: 3 });
+  emit("pointermove", { button: 0, buttons: 2 });
+  emit("pointermove", { button: -1, buttons: 2, clientX: 340 });
+  emit("pointerup", { button: 2, buttons: 0, clientX: 340 });
+  emit("pointermove", { button: -1, buttons: 0, clientX: 380 });
+  assert.deepEqual(layout.pos.get("root"), { x: 0, y: 0 });
+  assert.equal(layout.pinned.size, 0);
+  assert.deepEqual(picked, []);
+});
+
+test("final non-primary release always cleans up a tracked pointer without following", () => {
+  const picked = [];
+  const { view, emit } = interactiveCanvas({ onPick: (name) => picked.push(name) });
+  const layout = new GraphEngine([{ name: "root", degree: 1 }], []);
+  view.setGraph(layout);
+  layout.pos.set("root", { x: 0, y: 0 });
+  emit("pointerdown", { buttons: 1 });
+  emit("pointerup", { button: 2, buttons: 0 });
+  assert.equal(layout.pinned.size, 0);
+  emit("pointermove", { button: -1, buttons: 0, clientX: 380 });
+  assert.deepEqual(layout.pos.get("root"), { x: 0, y: 0 });
+  assert.deepEqual(picked, []);
 });
 
 test("rectangles share bounded cached label geometry with corner picking and zoom", () => {

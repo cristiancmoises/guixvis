@@ -778,6 +778,14 @@ class GraphCanvas {
       return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
     };
 
+    const cancelGesture = () => {
+      clearTimeout(longPressTimer);
+      pointers.clear();
+      if (dragNode && this.engine) this.engine.setPinned(dragNode, false);
+      dragNode = null;
+      panning = false;
+    };
+
     c.addEventListener("pointerdown", (ev) => {
       if (ev.button !== 0 || this.skeleton) return;
       c.setPointerCapture(ev.pointerId);
@@ -809,6 +817,9 @@ class GraphCanvas {
 
     c.addEventListener("pointermove", (ev) => {
       const p = posOf(ev);
+      // Releasing the primary button during a chord produces pointermove,
+      // not pointerup. Stop the gesture as soon as its button is no longer held.
+      if (pointers.has(ev.pointerId) && !(ev.buttons & 1)) cancelGesture();
       if (!pointers.has(ev.pointerId)) {
         const world = this.toWorld(p.x, p.y);
         const hover = this.engine ? this.engine.pick(world.x, world.y) : null;
@@ -858,11 +869,10 @@ class GraphCanvas {
     });
 
     c.addEventListener("pointerup", (ev) => {
-      if (ev.button !== 0) return;
       clearTimeout(longPressTimer);
       if (!pointers.has(ev.pointerId)) return;
       pointers.delete(ev.pointerId);
-      const wasTap = movedTotal < 8 && performance.now() - downAt < 250;
+      const wasTap = ev.button === 0 && movedTotal < 8 && performance.now() - downAt < 250;
       if (dragNode) {
         if (this.engine) this.engine.setPinned(dragNode, false);
         if (wasTap) this.onPick(dragNode);
@@ -876,13 +886,7 @@ class GraphCanvas {
       this.invalidate();
     });
 
-    c.addEventListener("pointercancel", () => {
-      clearTimeout(longPressTimer);
-      pointers.clear();
-      if (dragNode && this.engine) this.engine.setPinned(dragNode, false);
-      dragNode = null;
-      panning = false;
-    });
+    c.addEventListener("pointercancel", cancelGesture);
 
     c.addEventListener(
       "wheel",
