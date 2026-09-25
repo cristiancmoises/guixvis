@@ -107,6 +107,25 @@ test("final non-primary release always cleans up a tracked pointer without follo
   assert.deepEqual(picked, []);
 });
 
+test("untracked pointer release preserves a tracked touch long press", async () => {
+  const actions = [];
+  const { view, emit } = interactiveCanvas({
+    onNodeAction: (name, action) => actions.push([name, action]),
+  });
+  const layout = new GraphEngine([{ name: "root", degree: 1 }], []);
+  view.setGraph(layout);
+  layout.pos.set("root", { x: 0, y: 0 });
+
+  emit("pointerdown", { pointerType: "touch", pointerId: 1 });
+  assert.equal(layout.pinned.has("root"), true);
+  emit("pointerup", { pointerType: "mouse", pointerId: 2, button: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.deepEqual(actions, [["root", "tooltip"]]);
+
+  emit("pointerup", { pointerType: "touch", pointerId: 1 });
+  assert.equal(layout.pinned.size, 0);
+});
+
 test("rectangles share bounded cached label geometry with corner picking and zoom", () => {
   const { view, calls, emit } = interactiveCanvas();
   const name = "very-long-package-name-".repeat(12);

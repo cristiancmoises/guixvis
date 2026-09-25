@@ -869,8 +869,8 @@ class GraphCanvas {
     });
 
     c.addEventListener("pointerup", (ev) => {
-      clearTimeout(longPressTimer);
       if (!pointers.has(ev.pointerId)) return;
+      clearTimeout(longPressTimer);
       pointers.delete(ev.pointerId);
       const wasTap = ev.button === 0 && movedTotal < 8 && performance.now() - downAt < 250;
       if (dragNode) {
