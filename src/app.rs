@@ -83,6 +83,8 @@ fn is_web_homepage(url: &str) -> bool {
 pub struct TreeState {
     /// Keys of nodes whose children are expanded.
     pub expanded: HashSet<NodeKey>,
+    pub cursor: usize,
+    pub scroll: usize,
 }
 
 #[derive(Debug, Default)]
@@ -90,6 +92,8 @@ pub struct RevState {
     pub expanded: HashSet<NodeKey>,
     /// Whether the "Transitive" section is expanded.
     pub trans_open: bool,
+    pub cursor: usize,
+    pub scroll: usize,
 }
 
 #[derive(Debug)]
@@ -114,6 +118,7 @@ pub struct App {
     pub tree: TreeState,
     pub rev: RevState,
     pub graph: GraphView,
+    graph_anchor: Option<u32>,
     pub theme_idx: usize,
     pub help_open: bool,
     pub dirty: bool,
@@ -153,6 +158,7 @@ impl App {
             tree: TreeState::default(),
             rev: RevState::default(),
             graph: GraphView::default(),
+            graph_anchor: None,
             theme_idx: crate::theme::saved_theme(),
             help_open: false,
             dirty: true,
@@ -225,9 +231,14 @@ impl App {
         self.cursor = 0;
         self.scroll = 0;
         self.tree.expanded.clear();
+        self.tree.cursor = 0;
+        self.tree.scroll = 0;
         self.rev.expanded.clear();
         self.rev.trans_open = false;
+        self.rev.cursor = 0;
+        self.rev.scroll = 0;
         self.graph = GraphView::default();
+        self.graph_anchor = None;
         self.graph_dirty = true;
         // Re-dispatch any pending query against the fresh index.
         self.dispatch_query(self.query.clone());
@@ -245,9 +256,16 @@ impl App {
         if reply.ticket != self.requested_ticket || reply.query != self.query {
             return false;
         }
+        let selected = self.selected_id();
         self.results = reply.hits;
-        self.cursor = 0;
-        self.scroll = 0;
+        self.cursor = self.cursor.min(self.results.len().saturating_sub(1));
+        self.scroll = self.scroll.min(self.results.len().saturating_sub(1));
+        if selected != self.selected_id() {
+            self.reset_tree_positions();
+        }
+        if self.tab == Tab::Graph {
+            self.ensure_graph();
+        }
         true
     }
 
@@ -276,6 +294,7 @@ impl App {
         self.last_edit = Instant::now();
         self.cursor = 0;
         self.scroll = 0;
+        self.reset_tree_positions();
     }
 
     /// Rebuild the index in the background (keeps current index usable).
@@ -325,7 +344,6 @@ impl App {
             return;
         }
         self.tab = tab;
-        self.scroll = 0;
         if tab == Tab::Graph {
             self.ensure_graph();
         }
@@ -334,14 +352,20 @@ impl App {
 
     /// (Re)build the graph view from the current selection.
     pub fn ensure_graph(&mut self) {
+        let Some(id) = self.selected_id() else {
+            if self.graph_anchor.is_some() || !self.graph.nodes.is_empty() {
+                self.graph = GraphView::default();
+                self.graph_anchor = None;
+                self.dirty = true;
+            }
+            return;
+        };
         let Some(index) = self.index.clone() else {
             return;
         };
-        let Some(id) = self.selected_id() else {
-            return;
-        };
-        if self.graph.root != id || !self.graph.laid_out {
+        if self.graph_anchor != Some(id) || !self.graph.laid_out {
             self.graph.rebuild(&index, id, DEFAULT_DEPTH);
+            self.graph_anchor = Some(id);
             self.dirty = true;
         }
     }
@@ -400,7 +424,8 @@ impl App {
         if len == 0 {
             return;
         }
-        self.cursor = (self.cursor as i32 + delta).clamp(0, len - 1) as usize;
+        let cursor = (self.current_cursor() as i32 + delta).clamp(0, len - 1) as usize;
+        self.set_current_cursor(cursor);
         self.dirty = true;
     }
 
@@ -409,23 +434,24 @@ impl App {
         if len == 0 {
             return;
         }
-        self.cursor = if down {
-            (self.cursor + page).min(len - 1)
+        let cursor = if down {
+            self.current_cursor().saturating_add(page).min(len - 1)
         } else {
-            self.cursor.saturating_sub(page)
+            self.current_cursor().saturating_sub(page)
         };
+        self.set_current_cursor(cursor);
         self.dirty = true;
     }
 
     pub fn jump_top(&mut self) {
-        self.cursor = 0;
+        self.set_current_cursor(0);
         self.dirty = true;
     }
 
     pub fn jump_bottom(&mut self) {
         let len = self.row_count();
         if len > 0 {
-            self.cursor = len - 1;
+            self.set_current_cursor(len - 1);
             self.dirty = true;
         }
     }
@@ -453,6 +479,36 @@ impl App {
             }
             Tab::Graph => 0,
         }
+    }
+
+    fn current_cursor(&self) -> usize {
+        match self.tab {
+            Tab::Overview => self.cursor,
+            Tab::Deps => self.tree.cursor,
+            Tab::RevDeps => self.rev.cursor,
+            Tab::Graph => self.graph.selected,
+        }
+    }
+
+    fn set_current_cursor(&mut self, cursor: usize) {
+        match self.tab {
+            Tab::Overview => {
+                if self.cursor != cursor {
+                    self.cursor = cursor;
+                    self.reset_tree_positions();
+                }
+            }
+            Tab::Deps => self.tree.cursor = cursor,
+            Tab::RevDeps => self.rev.cursor = cursor,
+            Tab::Graph => {}
+        }
+    }
+
+    fn reset_tree_positions(&mut self) {
+        self.tree.cursor = 0;
+        self.tree.scroll = 0;
+        self.rev.cursor = 0;
+        self.rev.scroll = 0;
     }
 
     /// Handle one key event. Command character keys (d, r, v, 1-4, g, G, j,
@@ -648,6 +704,7 @@ impl App {
                 self.last_edit = Instant::now();
                 self.cursor = 0;
                 self.scroll = 0;
+                self.reset_tree_positions();
                 self.dirty = true;
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -656,6 +713,7 @@ impl App {
                 self.last_edit = Instant::now();
                 self.cursor = 0;
                 self.scroll = 0;
+                self.reset_tree_positions();
                 self.dirty = true;
             }
             KeyCode::Char(c) => {
@@ -675,7 +733,7 @@ impl App {
         } else {
             crate::ui::tree::rev_rows(index, &self.rev, id, usize::MAX)
         };
-        rows.get(self.cursor).map(|r| r.key)
+        rows.get(self.current_cursor()).map(|r| r.key)
     }
 
     /// Prepare for shutdown: cancel loader, drop the event channel.
@@ -690,12 +748,18 @@ impl App {
 
     /// Ensure the cursor is valid after results shrink (e.g. new reply).
     pub fn clamp_cursor(&mut self) {
-        let len = self.row_count();
-        if len > 0 && self.cursor >= len {
-            self.cursor = len - 1;
+        let overview = self.cursor.min(self.results.len().saturating_sub(1));
+        if overview != self.cursor {
+            self.cursor = overview;
+            self.reset_tree_positions();
         }
-        if len == 0 {
-            self.cursor = 0;
+        self.scroll = self.scroll.min(self.results.len().saturating_sub(1));
+        let len = self.row_count();
+        self.set_current_cursor(self.current_cursor().min(len.saturating_sub(1)));
+        match self.tab {
+            Tab::Deps => self.tree.scroll = self.tree.scroll.min(len.saturating_sub(1)),
+            Tab::RevDeps => self.rev.scroll = self.rev.scroll.min(len.saturating_sub(1)),
+            _ => {}
         }
     }
 }
@@ -748,6 +812,7 @@ mod search_tests {
             tree: TreeState::default(),
             rev: RevState::default(),
             graph: GraphView::default(),
+            graph_anchor: None,
             theme_idx: 0,
             help_open: false,
             dirty: false,
@@ -804,5 +869,172 @@ mod search_tests {
         wait_for_reply(&mut app);
         assert_eq!(app.selected_pkg().unwrap().name.as_ref(), "zlib");
         assert!(!app.search_pending());
+    }
+
+    fn browse_app() -> App {
+        let mut app = fixture_app();
+        app.dispatch_query(String::new());
+        wait_for_reply(&mut app);
+        app
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn tree_navigation_preserves_nonfirst_overview_package_across_tabs() {
+        let mut app = browse_app();
+        let zlib = app.results.iter().position(|h| h.hit.id == 4).unwrap();
+        app.cursor = zlib;
+        app.scroll = 2;
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.selected_id(), Some(4));
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::PageDown));
+        app.clamp_cursor();
+        assert_eq!(app.selected_id(), Some(4));
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Up));
+        app.on_key(key(KeyCode::PageUp));
+        app.clamp_cursor();
+        assert_eq!(app.selected_id(), Some(4));
+        app.on_key(key(KeyCode::Tab));
+        app.clamp_cursor();
+        assert_eq!(app.selected_id(), Some(4));
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.cursor, zlib);
+        assert_eq!(app.scroll, 2);
+        assert_eq!(app.selected_id(), Some(4));
+    }
+
+    #[test]
+    fn tree_arrows_and_pages_move_the_tree_row_only() {
+        let mut app = browse_app();
+        let gtk = app.results.iter().position(|h| h.hit.id == 3).unwrap();
+        assert!(gtk > 0);
+        app.cursor = gtk;
+        app.switch_tab(Tab::Deps);
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.tree.cursor, 1);
+        app.on_key(key(KeyCode::PageDown));
+        assert_eq!(app.tree.cursor, app.row_count() - 1);
+        app.on_key(key(KeyCode::PageUp));
+        assert_eq!(app.tree.cursor, 0);
+        assert_eq!(app.selected_id(), Some(3));
+        app.switch_tab(Tab::RevDeps);
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.rev.cursor, 1);
+        assert_eq!(app.selected_id(), Some(3));
+    }
+
+    #[test]
+    fn empty_and_shortened_results_clear_or_clamp_selection_and_graph() {
+        let mut app = browse_app();
+        app.cursor = app.results.len() - 1;
+        app.switch_tab(Tab::Graph);
+        app.results.truncate(2);
+        app.clamp_cursor();
+        assert_eq!(app.cursor, 1);
+        assert_eq!(app.selected_id(), Some(app.results[1].hit.id));
+        app.ensure_graph();
+        assert_eq!(app.graph.root, app.results[1].hit.id);
+        app.results.clear();
+        app.clamp_cursor();
+        app.ensure_graph();
+        assert_eq!(app.selected_id(), None);
+        assert!(app.graph.nodes.is_empty());
+    }
+
+    #[test]
+    fn graph_follow_and_depth_survive_draw_and_tab_round_trip_until_refocus() {
+        let mut app = browse_app();
+        let emacs = app.results.iter().position(|h| h.hit.id == 0).unwrap();
+        app.cursor = emacs;
+        app.switch_tab(Tab::Graph);
+        let next = app.graph.nodes.iter().position(|id| *id != 0).unwrap();
+        let followed = app.graph.nodes[next];
+        app.graph.selected = next;
+        app.graph_follow();
+        app.graph_depth_delta(1);
+        let depth = app.graph.depth;
+        let _ = screen(&mut app, 80, 24);
+        app.switch_tab(Tab::Deps);
+        app.switch_tab(Tab::Graph);
+        let _ = screen(&mut app, 80, 24);
+        assert_eq!(app.graph.root, followed);
+        assert_eq!(app.graph.depth, depth);
+        app.on_key(key(KeyCode::Char('g')));
+        assert_eq!(app.graph.root, 0);
+        assert_eq!(app.graph.depth, depth);
+    }
+
+    #[test]
+    fn accepted_search_reply_reanchors_graph_to_new_result() {
+        let mut app = browse_app();
+        app.switch_tab(Tab::Graph);
+        app.query = "zlib".into();
+        app.dispatch_query(app.query.clone());
+        wait_for_reply(&mut app);
+        assert_eq!(app.selected_id(), Some(4));
+        app.ensure_graph();
+        assert_eq!(app.graph.root, 4);
+        app.query = "unfindable-package-name".into();
+        app.dispatch_query(app.query.clone());
+        wait_for_reply(&mut app);
+        assert_eq!(app.selected_id(), None);
+        assert!(app.graph.nodes.is_empty());
+    }
+
+    fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn search_query_is_visible_in_the_bordered_header() {
+        let mut app = browse_app();
+        app.query = "visible-query".into();
+        let lines = screen(&mut app, 80, 24);
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Search: visible-query")));
+    }
+
+    #[test]
+    fn graph_canvas_labels_root_and_selected_node_at_eighty_columns() {
+        let mut app = browse_app();
+        let emacs = app.results.iter().position(|h| h.hit.id == 0).unwrap();
+        app.cursor = emacs;
+        app.switch_tab(Tab::Graph);
+        app.graph.selected = app.graph.nodes.iter().position(|id| *id == 4).unwrap();
+        let lines = screen(&mut app, 80, 24);
+        let canvas = lines[6..21].join("\n");
+        assert!(
+            canvas.contains("emacs"),
+            "root missing from canvas: {canvas}"
+        );
+        assert!(
+            canvas.contains("zlib"),
+            "selection missing from canvas: {canvas}"
+        );
+    }
+
+    #[test]
+    fn tiny_terminal_draw_is_safe_on_every_tab() {
+        let mut app = browse_app();
+        for tab in Tab::ALL {
+            app.switch_tab(tab);
+            let _ = screen(&mut app, 12, 4);
+        }
     }
 }

@@ -207,21 +207,27 @@ fn draw_tree(f: &mut Frame, app: &mut App, th: &Theme, area: Rect, title: &str, 
     }
     let viewport = inner.height as usize - 1;
     let max_scroll = rows.len().saturating_sub(viewport);
-    app.scroll = app.scroll.min(max_scroll);
-    if app.cursor < app.scroll {
-        app.scroll = app.cursor;
+    let (cursor, scroll) = if reverse {
+        (app.rev.cursor, &mut app.rev.scroll)
+    } else {
+        (app.tree.cursor, &mut app.tree.scroll)
+    };
+    *scroll = (*scroll).min(max_scroll);
+    if cursor < *scroll {
+        *scroll = cursor;
     }
-    if app.cursor >= app.scroll + viewport {
-        app.scroll = app.cursor + 1 - viewport;
+    if cursor >= *scroll + viewport {
+        *scroll = cursor + 1 - viewport;
     }
+    let scroll = *scroll;
 
     let items: Vec<ListItem> = rows
         .iter()
-        .skip(app.scroll)
+        .skip(scroll)
         .take(viewport)
         .map(|r| ListItem::new(render_row(index, app, th, r, reverse)))
         .collect();
-    let selected = app.cursor.saturating_sub(app.scroll);
+    let selected = cursor.saturating_sub(scroll);
     let list = List::new(items)
         .highlight_style(th.selected)
         .highlight_symbol("▶ ");

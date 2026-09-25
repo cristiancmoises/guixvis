@@ -33,7 +33,7 @@ pub fn draw(f: &mut Frame, _app: &App, th: &Theme, area: Rect) {
         ("h / l", "collapse / expand tree node"),
         ("+ / −", "graph depth"),
         ("e", "graph edges (all / focus / none)"),
-        ("l", "graph labels on / off"),
+        ("l", "graph hub labels on / off"),
         ("o", "open homepage in browser"),
         ("T", "cycle and save theme (9 palettes)"),
         ("R", "rebuild index"),

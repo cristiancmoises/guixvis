@@ -14,16 +14,13 @@ use ratatui::widgets::canvas::{Canvas, Circle, Line as GLine};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, Tab};
+use crate::app::App;
 use crate::graph::EdgeMode;
 use crate::index::DepKind;
 use crate::theme::{self, Theme};
 
 pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
-    // Build/refresh the layout when entering or after depth changes.
-    if app.tab == Tab::Graph {
-        app.ensure_graph();
-    }
+    app.ensure_graph();
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -42,7 +39,11 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
         );
         return;
     };
-    let root_pkg = index.packages.get(app.graph.root as usize);
+    let root_pkg = if app.graph.nodes.is_empty() {
+        None
+    } else {
+        index.packages.get(app.graph.root as usize)
+    };
     let (nodes, edges) = (app.graph.nodes.len(), app.graph.edges.len());
     let header = match root_pkg {
         Some(p) => format!(
@@ -99,7 +100,7 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
     // the selection and the root always, hubs only when there is room and the
     // user asked for them (`l`).
     let label_budget = if !app.graph_labels {
-        1
+        0
     } else if area.width >= 150 {
         10
     } else if area.width >= 110 {
@@ -110,27 +111,24 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
         0
     };
     let selected = app.graph.selected;
-    let mut label_nodes: Vec<usize> = Vec::new();
-    if label_budget > 0 {
-        label_nodes.push(selected.min(nodes - 1));
-        if app.graph.root as usize != selected {
-            label_nodes.push(0);
-        }
-        if app.graph.depth_of.len() == nodes {
-            let mut by_degree: Vec<(usize, usize)> = (0..nodes)
-                .map(|i| {
-                    let id = app.graph.nodes[i] as usize;
-                    (
-                        i,
-                        index.packages.get(id).map_or(0, |p| p.dep_count())
-                            + index.dependents_count(app.graph.nodes[i]),
-                    )
-                })
-                .filter(|(i, _)| !label_nodes.contains(i))
-                .collect();
-            by_degree.sort_by(|a, b| b.1.cmp(&a.1));
-            label_nodes.extend(by_degree.into_iter().take(label_budget).map(|(i, _)| i));
-        }
+    let mut label_nodes = vec![selected.min(nodes - 1)];
+    if selected != 0 {
+        label_nodes.push(0);
+    }
+    if label_budget > 0 && app.graph.depth_of.len() == nodes {
+        let mut by_degree: Vec<(usize, usize)> = (0..nodes)
+            .map(|i| {
+                let id = app.graph.nodes[i] as usize;
+                (
+                    i,
+                    index.packages.get(id).map_or(0, |p| p.dep_count())
+                        + index.dependents_count(app.graph.nodes[i]),
+                )
+            })
+            .filter(|(i, _)| !label_nodes.contains(i))
+            .collect();
+        by_degree.sort_by(|a, b| b.1.cmp(&a.1));
+        label_nodes.extend(by_degree.into_iter().take(label_budget).map(|(i, _)| i));
     }
 
     // Neighbours of the selection: brighter nodes, brighter edges.
@@ -200,15 +198,18 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
 
             // Labels last so they sit on top of the markers.
             let mut placed: Vec<(f64, f64)> = Vec::new();
+            let canvas_width = chunks[2].width.saturating_sub(2).max(1) as f64;
             for i in label_nodes.iter().copied() {
                 let Some(id) = app.graph.nodes.get(i) else {
                     continue;
                 };
                 let p = &index.packages[*id as usize];
                 let (x, y) = app.graph.pos[i];
-                if placed
-                    .iter()
-                    .any(|(px, py)| (px - x as f64).abs() < 0.22 && (py - y as f64).abs() < 0.14)
+                if i != selected
+                    && i != 0
+                    && placed.iter().any(|(px, py)| {
+                        (px - x as f64).abs() < 0.22 && (py - y as f64).abs() < 0.14
+                    })
                 {
                     continue;
                 }
@@ -216,9 +217,13 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
                 let name: String = p.name.chars().take(26).collect();
                 let w = unicode_width::UnicodeWidthStr::width(name.as_str()) as f64;
                 let dy = if y > 0.55 { -0.16 } else { 0.13 };
+                let label_width = w * 3.2 / canvas_width;
+                let label_x =
+                    (x as f64 - label_width / 2.0).clamp(-1.6, (1.6 - label_width).max(-1.6));
+                let label_y = (y as f64 + dy).clamp(-0.95, 0.95);
                 ctx.print(
-                    x as f64 - w * 0.042,
-                    y as f64 + dy,
+                    label_x,
+                    label_y,
                     Span::styled(
                         name,
                         Style::default().fg(if i == selected {
@@ -238,7 +243,7 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
         Some(id) => index.packages.get(id as usize).map_or_else(String::new, |p| {
             let deg = index.dependents_count(id);
             format!(
-                " {} {} · {} deps · {} dependents — Enter follow · e: {} · l: labels {} · +/− depth ",
+                " {} {} · {} deps · {} dependents — Enter follow · g refocus · e: {} · l: hubs {} · +/− depth ",
                 p.name,
                 p.version,
                 p.dep_count(),
@@ -248,7 +253,7 @@ pub fn draw(f: &mut Frame, app: &mut App, th: &Theme, area: Rect) {
             )
         }),
         None => format!(
-            " Enter follow · e: {} · l: labels {} · +/− depth · g refocus",
+            " Enter follow · e: {} · l: hubs {} · +/− depth · g refocus",
             app.edge_mode.label(),
             if app.graph_labels { "on" } else { "off" }
         ),
