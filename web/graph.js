@@ -2,7 +2,7 @@
    Vanilla JS, no dependencies. The GraphEngine is DOM-free (testable);
    GraphCanvas binds it to a <canvas> with DPR scaling and input.
 
-   Coordinate model: engine positions are WORLD units in a fixed frame
+   Coordinate model: engine positions are WORLD units, seeded in a frame
    [-1.6, 1.6] x [-1, 1] (same constants as the TUI layout, which is
    visually validated). The canvas maps world -> pixels with a scale S and
    node radii are converted with unit = 1/S, keeping repulsion, collision
@@ -38,6 +38,8 @@ class GraphEngine {
     this.names = nodes.map((n) => n.name);
     this.byName = new Map(nodes.map((node) => [node.name, node]));
     this.radii = new Map(nodes.map((node) => [node.name, radiusOf(node.degree)]));
+    this.style = "bubbles";
+    this.boxes = new Map();
     this.adj = new Map();
     this.names.forEach((n) => this.adj.set(n, []));
     for (const e of edges) {
@@ -95,6 +97,27 @@ class GraphEngine {
     return (this.radii.get(name) || 8) * this.unit;
   }
 
+  boundsOfWorld(name) {
+    const box = this.style === "rectangles" && this.boxes.get(name);
+    const radius = this.radii.get(name) || 8;
+    return {
+      halfWidth: (box ? box.width / 2 : radius) * this.unit,
+      halfHeight: (box ? box.height / 2 : radius) * this.unit,
+    };
+  }
+
+  /* Minimum axis displacement for the same boxes used to draw and pick. */
+  rectangleOverlap(a, b) {
+    const pa = this.pos.get(a), pb = this.pos.get(b);
+    const ba = this.boundsOfWorld(a), bb = this.boundsOfWorld(b);
+    const dx = pa.x - pb.x, dy = pa.y - pb.y;
+    const ox = ba.halfWidth + bb.halfWidth + 8 * this.unit - Math.abs(dx);
+    const oy = ba.halfHeight + bb.halfHeight + 8 * this.unit - Math.abs(dy);
+    if (ox <= 0 || oy <= 0) return null;
+    return ox < oy ? { x: (Math.sign(dx) || 1) * ox, y: 0 }
+      : { x: 0, y: (Math.sign(dy) || 1) * oy };
+  }
+
   /* One Fruchterman–Reingold step with radial springs and collision.
      Constants mirror the validated Rust TUI layout (see src/graph.rs). */
   tick() {
@@ -127,6 +150,14 @@ class GraphEngine {
         this.push(a, fx, fy);
         this.push(b, -fx, -fy);
 
+        if (this.style === "rectangles") {
+          const overlap = this.rectangleOverlap(a, b);
+          if (overlap) {
+            this.push(a, overlap.x / 2, overlap.y / 2);
+            this.push(b, -overlap.x / 2, -overlap.y / 2);
+          }
+          continue;
+        }
         // Collision: keep bubbles from overlapping.
         const ra = this.radiusOfWorld(a);
         const rb = this.radiusOfWorld(b);
@@ -169,6 +200,7 @@ class GraphEngine {
     // Soft walls keep the layout inside the initial viewport frame
     // [-1.6, 1.6] x [-1, 1], so the graph is explorable without panning.
     for (const name of this.names) {
+      if (this.style === "rectangles") break; // boxes may extend into pannable space
       if (this.pinned.has(name)) continue;
       const p = this.pos.get(name);
       const overX = Math.max(0, Math.abs(p.x) - 1.55);
@@ -250,6 +282,17 @@ class GraphEngine {
           const b = this.names[j];
           const pa = this.pos.get(a);
           const pb = this.pos.get(b);
+          if (this.style === "rectangles") {
+            const overlap = this.rectangleOverlap(a, b);
+            if (overlap) {
+              violations += 1;
+              pa.x += overlap.x / 2;
+              pa.y += overlap.y / 2;
+              pb.x -= overlap.x / 2;
+              pb.y -= overlap.y / 2;
+            }
+            continue;
+          }
           let dx = pa.x - pb.x;
           let dy = pa.y - pb.y;
           let d = Math.hypot(dx, dy);
@@ -272,12 +315,28 @@ class GraphEngine {
       total += violations;
       if (violations === 0) break;
     }
+    if (this.style === "rectangles") {
+      // A finite relaxation budget can leave dense clusters intersecting.
+      // Sweep in vertical order to enforce spacing without shrinking any box.
+      const ordered = this.names.map((name) => ({
+        p: this.pos.get(name), box: this.boundsOfWorld(name),
+      })).sort((a, b) => a.p.y - b.p.y);
+      for (let i = 0; i < ordered.length; i++) {
+        const a = ordered[i];
+        for (let j = 0; j < i; j++) {
+          const b = ordered[j];
+          if (Math.abs(a.p.x - b.p.x) < a.box.halfWidth + b.box.halfWidth + 8 * this.unit) {
+            a.p.y = Math.max(a.p.y, b.p.y + a.box.halfHeight + b.box.halfHeight + 8 * this.unit);
+          }
+        }
+      }
+    }
     // Shrink back into the frame uniformly (no corner pileups).
     let maxAbs = 0;
     for (const p of this.pos.values()) {
       maxAbs = Math.max(maxAbs, Math.abs(p.x), Math.abs(p.y));
     }
-    if (maxAbs > 1.6) {
+    if (this.style !== "rectangles" && maxAbs > 1.6) {
       const s = 1.6 / maxAbs;
       for (const p of this.pos.values()) {
         p.x *= s;
@@ -294,6 +353,12 @@ class GraphEngine {
     for (let i = this.names.length - 1; i >= 0; i--) {
       const name = this.names[i];
       const p = this.pos.get(name);
+      if (this.style === "rectangles") {
+        const box = this.boundsOfWorld(name);
+        if (Math.abs(p.x - x) <= Math.max(box.halfWidth, minR) &&
+            Math.abs(p.y - y) <= Math.max(box.halfHeight, minR)) return name;
+        continue;
+      }
       const r = Math.max(this.radiusOfWorld(name), minR);
       const dx = p.x - x;
       const dy = p.y - y;
@@ -309,6 +374,7 @@ class GraphCanvas {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.onPick = opts.onPick || (() => {});
+    this.onBack = opts.onBack || (() => {});
     this.onNodeAction = opts.onNodeAction || (() => {});
     this.onTransform = opts.onTransform || (() => {});
     this.engine = null;
@@ -323,6 +389,8 @@ class GraphCanvas {
     this.skeleton = false;
     this.loadedAt = 0;
     this.dirReverse = false;
+    this.style = "bubbles";
+    this.labelCache = new Map();
     this.colors = {
       edge: "rgba(120, 134, 160, 0.20)",
       edgeHot: "rgba(94, 196, 255, 0.45)",
@@ -389,6 +457,47 @@ class GraphCanvas {
     if (this.onInvalidate) this.onInvalidate();
   }
 
+  rectangleLabel(name) {
+    if (this.labelCache.has(name)) return this.labelCache.get(name);
+    this.ctx.font = "500 12px ui-sans-serif, system-ui, sans-serif";
+    const measure = (text) => this.ctx.measureText(text).width;
+    let label = name;
+    if (measure(label) > 176) {
+      const chars = Array.from(name);
+      let lo = 0, hi = chars.length;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (measure(chars.slice(0, mid).join("") + "…") <= 176) lo = mid;
+        else hi = mid - 1;
+      }
+      label = chars.slice(0, lo).join("") + "…";
+    }
+    const box = { label, width: Math.max(64, Math.min(200, measure(label) + 24)), height: 32 };
+    this.labelCache.set(name, box);
+    return box;
+  }
+
+  configureGeometry() {
+    if (!this.engine) return;
+    this.engine.style = this.style;
+    if (this.style === "rectangles") {
+      this.engine.boxes = new Map(this.engine.names.map((name) => [name, this.rectangleLabel(name)]));
+    }
+  }
+
+  setStyle(style) {
+    const next = style === "rectangles" ? "rectangles" : "bubbles";
+    if (next === this.style) return;
+    this.style = next;
+    this.configureGeometry();
+    if (this.engine) {
+      this.engine.alpha = 0.5;
+      this.engine.separated = false;
+      if (this.engine.reducedMotion) this.engine.settle();
+    }
+    this.invalidate();
+  }
+
   setGraph(engine, { root, selected, skeleton = false } = {}) {
     this.engine = engine;
     this.rootName = root || (engine ? engine.names[0] : null);
@@ -398,6 +507,9 @@ class GraphCanvas {
     this.loadedAt = performance.now();
     if (engine) {
       engine.unit = 1 / this.fitScale();
+      // Keep measurements only for the active graph, avoiding unbounded history growth.
+      this.labelCache = new Map([...this.labelCache].filter(([name]) => engine.byName.has(name)));
+      this.configureGeometry();
       if (engine.reducedMotion) engine.settle();
     }
     this.fit();
@@ -426,7 +538,10 @@ class GraphCanvas {
     this.canvas.width = Math.max(1, Math.round(w * dpr));
     this.canvas.height = Math.max(1, Math.round(h * dpr));
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (this.engine) this.engine.unit = 1 / this.fitScale();
+    if (this.engine) {
+      this.engine.unit = 1 / this.fitScale();
+      if (this.style === "rectangles") this.engine.separate();
+    }
     if (!this.userTransformed) this.fit();
     this.invalidate();
   }
@@ -523,6 +638,22 @@ class GraphCanvas {
       if (isRoot) rgb = this.dirReverse ? this.colors.rootAlt : this.colors.node;
       if (isSel) rgb = this.colors.selected;
       const [cr, cg, cb] = rgb;
+      if (eng.style === "rectangles") {
+        const box = eng.boundsOfWorld(name);
+        ctx.fillStyle = this.bgHex;
+        ctx.strokeStyle = `rgb(${cr},${cg},${cb})`;
+        ctx.lineWidth = (isSel ? 3 : isRoot || isHov ? 2 : 1) * unit;
+        ctx.beginPath();
+        ctx.rect(p.x - box.halfWidth, p.y - box.halfHeight, box.halfWidth * 2, box.halfHeight * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.font = `500 ${12 * unit}px ui-sans-serif, system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = this.colors.label;
+        ctx.fillText(eng.boxes.get(name).label, p.x, p.y);
+        continue;
+      }
       const grad = ctx.createRadialGradient(
         p.x - r * 0.3, p.y - r * 0.35, r * 0.1, p.x, p.y, r
       );
@@ -560,6 +691,10 @@ class GraphCanvas {
       }
     }
 
+    if (eng.style === "rectangles") {
+      ctx.restore();
+      return;
+    }
     // Labels are placed in screen space: measured in pixels, checked against
     // the boxes already placed, and drawn with a background-coloured halo so
     // they stay readable where edges pass underneath. Guesswork in world
@@ -644,6 +779,7 @@ class GraphCanvas {
     };
 
     c.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0 || this.skeleton) return;
       c.setPointerCapture(ev.pointerId);
       pointers.set(ev.pointerId, posOf(ev));
       movedTotal = 0;
@@ -661,6 +797,8 @@ class GraphCanvas {
         }
       } else if (pointers.size === 2) {
         clearTimeout(longPressTimer);
+        if (dragNode && this.engine) this.engine.setPinned(dragNode, false);
+        dragNode = null;
         const [a, b] = [...pointers.values()];
         pinchDist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
         pinchScale = this.scale;
@@ -720,6 +858,7 @@ class GraphCanvas {
     });
 
     c.addEventListener("pointerup", (ev) => {
+      if (ev.button !== 0) return;
       clearTimeout(longPressTimer);
       if (!pointers.has(ev.pointerId)) return;
       pointers.delete(ev.pointerId);
@@ -763,7 +902,10 @@ class GraphCanvas {
       { passive: false }
     );
 
-    c.addEventListener("contextmenu", (ev) => ev.preventDefault());
+    c.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      if (ev.pointerType !== "touch") this.onBack();
+    });
     c.addEventListener("pointerleave", () => this.clearHover());
   }
 

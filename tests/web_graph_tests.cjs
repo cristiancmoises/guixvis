@@ -27,6 +27,143 @@ function canvas() {
   return view;
 }
 
+function interactiveCanvas(options = {}) {
+  const listeners = new Map();
+  const calls = [];
+  const context = new Proxy({
+    measureText: (text) => { calls.push(["measureText", text]); return { width: [...text].length * 7 }; },
+    createRadialGradient: () => ({ addColorStop() {} }),
+  }, { get: (obj, key) => key in obj ? obj[key] : (...args) => calls.push([key, ...args]) });
+  const view = new GraphCanvas({
+    getContext: () => context, style: {},
+    addEventListener: (name, fn) => listeners.set(name, fn),
+    getBoundingClientRect: () => ({ left: 0, top: 0 }),
+    setPointerCapture() {},
+  }, options);
+  view.resize(600, 400, 1);
+  const emit = (type, values = {}) => listeners.get(type)({
+    pointerId: 1, button: 0, clientX: 300, clientY: 200, preventDefault() {}, ...values,
+  });
+  return { view, emit, calls };
+}
+
+test("only primary gestures pick or drag; context menu requests one back", () => {
+  const picked = [], back = [];
+  const { view, emit } = interactiveCanvas({ onPick: (name) => picked.push(name), onBack: () => back.push(true) });
+  const layout = new GraphEngine([{ name: "root", degree: 1 }], []);
+  view.setGraph(layout);
+  layout.pos.set("root", { x: 0, y: 0 });
+  for (const button of [1, 2]) {
+    emit("pointerdown", { button });
+    emit("pointermove", { button, clientX: 330 });
+    emit("pointerup", { button, clientX: 330 });
+    assert.deepEqual(layout.pos.get("root"), { x: 0, y: 0 });
+    emit("pointerdown", { button });
+    emit("pointerup", { button });
+  }
+  assert.deepEqual(picked, []);
+  emit("contextmenu", { button: 2 });
+  assert.equal(back.length, 1);
+  emit("pointerdown");
+  emit("pointerup");
+  assert.deepEqual(picked, ["root"]);
+  emit("pointerdown");
+  emit("pointermove", { clientX: 340 });
+  emit("pointerup", { clientX: 340 });
+  assert.ok(layout.pos.get("root").x > 0);
+  assert.equal(picked.length, 1);
+});
+
+test("rectangles share bounded cached label geometry with corner picking and zoom", () => {
+  const { view, calls, emit } = interactiveCanvas();
+  const name = "very-long-package-name-".repeat(12);
+  const layout = new GraphEngine([{ name, degree: 1 }], [], { reducedMotion: true });
+  view.setGraph(layout);
+  view.setStyle("rectangles");
+  const box = layout.boundsOfWorld(name);
+  const p = layout.pos.get(name);
+  assert.ok(box.halfWidth / layout.unit <= 100);
+  assert.ok(box.halfWidth / layout.unit >= 32);
+  assert.equal(layout.pick(p.x + box.halfWidth * 0.99, p.y + box.halfHeight * 0.99, 0), name);
+  assert.equal(layout.pick(p.x + box.halfWidth + layout.unit, p.y, 0), null);
+  const measurements = calls.filter((c) => c[0] === "measureText").length;
+  view.paint();
+  view.paint();
+  assert.equal(calls.filter((c) => c[0] === "measureText").length, measurements);
+  const label = calls.find((c) => c[0] === "fillText")[1];
+  assert.ok(label.endsWith("…"));
+  assert.equal(layout.node(name).name, name);
+  const rect = calls.find((c) => c[0] === "rect");
+  assert.equal(rect[3], box.halfWidth * 2);
+  emit("wheel", { deltaY: -200 });
+  assert.deepEqual(layout.boundsOfWorld(name), box);
+  const corner = view.toWorld((p.x + box.halfWidth * 0.99) * view.scale + view.tx,
+    (p.y + box.halfHeight * 0.99) * view.scale + view.ty);
+  assert.equal(layout.pick(corner.x, corner.y, 0), name);
+});
+
+test("dense rectangles settle without squeezing their separated extent back into the frame", () => {
+  const { view } = interactiveCanvas();
+  const nodes = Array.from({ length: 80 }, (_, i) => ({ name: `long-package-name-${i}`, degree: 1 }));
+  const layout = new GraphEngine(nodes, [], { reducedMotion: true });
+  view.setGraph(layout);
+  view.setStyle("rectangles");
+  for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+    const a = nodes[i].name, b = nodes[j].name;
+    const pa = layout.pos.get(a), pb = layout.pos.get(b);
+    const ba = layout.boundsOfWorld(a), bb = layout.boundsOfWorld(b);
+    assert.ok(Math.abs(pa.x - pb.x) >= ba.halfWidth + bb.halfWidth ||
+      Math.abs(pa.y - pb.y) >= ba.halfHeight + bb.halfHeight, `${a} overlaps ${b}`);
+  }
+  assert.ok([...layout.pos.values()].some((p) => Math.abs(p.x) > 1.6 || Math.abs(p.y) > 1.6));
+  assert.equal(view.frame(), false);
+  view.setStyle("bubbles");
+  assert.equal(layout.style, "bubbles");
+});
+
+test("touch pinch and cancellation do not follow nodes; background pan still works", () => {
+  const picked = [];
+  let backs = 0;
+  const { view, emit } = interactiveCanvas({ onPick: (name) => picked.push(name), onBack: () => backs++ });
+  const layout = new GraphEngine([{ name: "root", degree: 1 }], []);
+  view.setGraph(layout);
+  layout.pos.set("root", { x: 0, y: 0 });
+  emit("pointerdown", { pointerType: "touch" });
+  emit("pointerdown", { pointerType: "touch", pointerId: 2, clientX: 350 });
+  emit("pointerup", { pointerType: "touch", pointerId: 2, clientX: 350 });
+  emit("pointerup", { pointerType: "touch" });
+  assert.deepEqual(picked, []);
+  assert.equal(layout.pinned.size, 0);
+  emit("pointerdown", { pointerType: "touch" });
+  emit("pointercancel");
+  emit("pointerup", { pointerType: "touch" });
+  assert.deepEqual(picked, []);
+  const tx = view.tx;
+  emit("pointerdown", { clientX: 30 });
+  emit("pointermove", { clientX: 70 });
+  emit("pointerup", { clientX: 70 });
+  assert.equal(view.tx, tx + 40);
+  emit("contextmenu", { pointerType: "touch" });
+  assert.equal(backs, 0, "touch long-press retains the tooltip gesture");
+});
+
+test("rectangle separation resolves coincident dense nodes even with a short relaxation budget", () => {
+  const { view } = interactiveCanvas();
+  const nodes = Array.from({ length: 150 }, (_, i) => ({ name: `long-package-${i}`, degree: 1 }));
+  const layout = new GraphEngine(nodes, []);
+  view.setGraph(layout);
+  view.setStyle("rectangles");
+  for (const name of layout.names) layout.pos.set(name, { x: 0, y: 0 });
+  layout.separate(2);
+  for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+    const a = nodes[i].name, b = nodes[j].name;
+    const pa = layout.pos.get(a), pb = layout.pos.get(b);
+    const ba = layout.boundsOfWorld(a), bb = layout.boundsOfWorld(b);
+    assert.ok(Math.abs(pa.x - pb.x) >= ba.halfWidth + bb.halfWidth ||
+      Math.abs(pa.y - pb.y) >= ba.halfHeight + bb.halfHeight, `${a} overlaps ${b}`);
+  }
+});
+
 test("node and radius lookups preserve values without scanning names", () => {
   const layout = engine();
   layout.names.indexOf = () => { throw new Error("linear lookup"); };

@@ -21,6 +21,8 @@
       <ul id="results" role="listbox" aria-label="Search results" hidden></ul>
     </div>
     <div id="controls">
+      <button id="back-btn" title="Previous graph (also right-click the canvas)"
+              aria-label="Back to previous graph" disabled>← Back</button>
       <button id="view-btn" aria-pressed="false" aria-controls="package-browser"
               title="Switch between the graph and package results">Packages</button>
       <button id="dir-btn" title="Graph direction: dependencies or dependents"
@@ -32,6 +34,12 @@
       </div>
       <button id="copy-link" title="Copy link to this view"
               aria-label="Copy link to this view">⧉</button>
+      <label class="graph-style-label" for="graph-style">Graph style
+        <select id="graph-style">
+          <option value="bubbles">Bubbles</option>
+          <option value="rectangles">Rectangles</option>
+        </select>
+      </label>
       <select id="theme-select" title="Color theme" aria-label="Color theme">
         <option value="system">system</option>
         <option value="dark">dark</option>
@@ -53,7 +61,7 @@
               aria-label="Package dependency graph"></canvas>
       <div id="graph-status" role="status" aria-live="polite"></div>
       <div id="truncated-pill" role="status" hidden></div>
-      <div id="hint">click a bubble to explore · drag background to pan · scroll to zoom</div>
+      <div id="hint">click a node to explore · right-click to go back · drag background to pan · scroll to zoom</div>
       <section id="package-browser" aria-label="Package browser" hidden>
         <div class="browse-heading">
           <h1>Packages</h1>

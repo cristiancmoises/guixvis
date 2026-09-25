@@ -54,6 +54,8 @@
     detail: $("#detail"),
     close: $("#close-detail"),
     themeSelect: $("#theme-select"),
+    graphStyle: $("#graph-style"),
+    backBtn: $("#back-btn"),
     viewBtn: $("#view-btn"),
     browser: $("#package-browser"),
     packageList: $("#package-list"),
@@ -71,8 +73,12 @@
   };
 
   let animationFrame = null;
+  // Only entries created in this document lifetime are safe for in-app Back.
+  // Reloads and manually edited hashes deliberately start a new boundary.
+  const navigation = { session: `${Date.now()}-${Math.random()}`, entries: [], index: -1, pending: false };
   const graph = new GraphCanvas(els.canvas, {
     onPick: (name) => open(name),
+    onBack: () => back(),
     onNodeAction: (name, kind, ev) => {
       if (kind === "tooltip") showTooltip(name, ev.x, ev.y, true);
     },
@@ -81,6 +87,22 @@
   graph.dirReverse = false;
   graph.reducedMotion = state.reducedMotion;
   graph.onInvalidate = requestGraphFrame;
+
+  function applyGraphStyle(value, save = true) {
+    const style = value === "rectangles" ? "rectangles" : "bubbles";
+    els.graphStyle.value = style;
+    graph.setStyle(style);
+    try {
+      if (save) localStorage.setItem("guixvis-graph-style", style);
+    } catch (_) { /* storage unavailable */ }
+  }
+  let savedStyle = "bubbles";
+  try { savedStyle = localStorage.getItem("guixvis-graph-style"); }
+  catch (_) { /* storage unavailable */ }
+  applyGraphStyle(savedStyle, false);
+  els.graphStyle.addEventListener("change", () => applyGraphStyle(els.graphStyle.value));
+  els.backBtn.addEventListener("click", back);
+  updateBack();
 
   /* ---------- themes ---------- */
   function applyTheme(name, save = true) {
@@ -132,25 +154,48 @@
     return `#/p/${encodeURIComponent(name)}?depth=${depth}&dir=${dir}`;
   }
 
+  function updateBack() {
+    els.backBtn.disabled = navigation.pending || navigation.index <= 0;
+  }
+
+  function writeHistory(url, push) {
+    if (!push || navigation.index < 0) {
+      navigation.entries = [url];
+      navigation.index = 0;
+      push = false;
+    } else {
+      navigation.entries.splice(navigation.index + 1);
+      navigation.entries.push(url);
+      navigation.index += 1;
+    }
+    const marker = { guixvis: { session: navigation.session, index: navigation.index } };
+    history[push ? "pushState" : "replaceState"](marker, "", url);
+    updateBack();
+  }
+
+  function back() {
+    if (navigation.pending || navigation.index <= 0) return;
+    navigation.pending = true;
+    // Invalidate in-flight responses before the asynchronous popstate arrives.
+    if (state.abort) state.abort.abort();
+    state.request += 1;
+    state.loading = false;
+    updateBack();
+    history.back();
+  }
+
   function open(name, { keepPositions = true, push = true } = {}) {
-    if (!name) return;
+    if (!name || navigation.pending) return;
     const depth = state.depth;
     const dir = state.dir;
-    const loaded = state.loaded;
-    if (
-      loaded &&
-      loaded.name === name &&
-      loaded.depth === depth &&
-      loaded.dir === dir &&
-      !state.loading
-    ) {
-      showSidebar();
+    const url = canonicalHash(name, depth, dir);
+    if (url === navigation.entries[navigation.index] && (state.loaded || state.loading)) {
+      if (!state.loading) showSidebar();
       return;
     }
     state.name = name;
-    const url = canonicalHash(name, depth, dir);
-    if (push) history.pushState({ name, depth, dir }, "", url);
-    else history.replaceState({ name, depth, dir }, "", url);
+    // Retrying a failed visit must not create a duplicate history entry either.
+    if (url !== navigation.entries[navigation.index]) writeHistory(url, push);
     load(name, keepPositions);
   }
 
@@ -669,6 +714,7 @@
 
   /* ---------- controls ---------- */
   els.depthPlus.addEventListener("click", () => {
+    if (navigation.pending) return;
     if (state.depth < 8) {
       state.depth += 1;
       els.depthVal.textContent = state.depth;
@@ -676,6 +722,7 @@
     }
   });
   els.depthMinus.addEventListener("click", () => {
+    if (navigation.pending) return;
     if (state.depth > 1) {
       state.depth -= 1;
       els.depthVal.textContent = state.depth;
@@ -683,6 +730,7 @@
     }
   });
   els.dirBtn.addEventListener("click", () => {
+    if (navigation.pending) return;
     state.dir = state.dir === "deps" ? "reverse" : "deps";
     els.dirBtn.textContent = state.dir === "deps" ? "deps ▾" : "reverse ▾";
     els.dirBtn.classList.toggle("active", state.dir === "reverse");
@@ -703,8 +751,25 @@
   /* ---------- history ---------- */
   function followHash() {
     const parsed = parseHash();
-    if (!parsed) return;
-    if (parsed.name !== state.name || parsed.depth !== state.depth || parsed.dir !== state.dir) {
+    navigation.pending = false;
+    if (!parsed) {
+      navigation.entries = [];
+      navigation.index = -1;
+      if (state.abort) state.abort.abort();
+      state.request += 1;
+      state.loading = false;
+      updateBack();
+      return;
+    }
+    const url = canonicalHash(parsed.name, parsed.depth, parsed.dir);
+    const marker = history.state && history.state.guixvis;
+    if (marker && marker.session === navigation.session &&
+        Number.isInteger(marker.index) && navigation.entries[marker.index] === url) {
+      navigation.index = marker.index;
+      updateBack();
+    } else writeHistory(url, false);
+    if (parsed.name !== state.name || parsed.depth !== state.depth || parsed.dir !== state.dir ||
+        (!state.loading && !state.loaded)) {
       state.depth = parsed.depth;
       state.dir = parsed.dir;
       els.depthVal.textContent = state.depth;
@@ -803,12 +868,7 @@
       els.depthVal.textContent = parsed.depth;
       els.dirBtn.textContent = state.dir === "deps" ? "deps ▾" : "reverse ▾";
       els.dirBtn.classList.toggle("active", state.dir === "reverse");
-      load(parsed.name, false);
-      history.replaceState(
-        { name: parsed.name, depth: parsed.depth, dir: parsed.dir },
-        "",
-        canonicalHash(parsed.name, parsed.depth, parsed.dir)
-      );
+      open(parsed.name, { keepPositions: false, push: false });
     } else {
       // No deep link: open a hub package so the canvas is never empty.
       open("emacs", { keepPositions: false, push: false });
