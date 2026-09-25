@@ -20,13 +20,40 @@ Refine the search when the result count reaches the cap.
 
 In the terminal, `Tab` moves between overview, dependencies, reverse
 dependencies, and graph. Arrow keys work while searching. Letter shortcuts
-such as `d`, `r`, and `v` act when the search is empty. Press `?` for help.
+such as `d`, `r`, and `v` act when the search is empty. The current query stays
+visible in the bordered header, including on narrow terminals. Press `?` for
+help.
+
+The Overview result is the package anchor for the other tabs. Arrow keys and
+page keys in a dependency tree move that tree's cursor without changing the
+Overview result. In Graph, `Enter` follows the selected node as the new root;
+`+` and `−` adjust depth from 1 to 8. The followed root and depth remain when
+you switch tabs. Press `g` in Graph to refocus on the Overview package at the
+current depth, or select a different Overview result to start a new graph.
+At tight widths, graph labels prioritize the root and selected node.
 
 In the browser, **Packages** keeps the results visible. Choose a row to read
 its details, then follow dependency chips or switch to **Graph**. The direction
 button switches between dependencies and dependents; `+` and `−` change depth.
 The copy-link button copies the current package, direction, and depth. Links
 refer to your local service; another person needs Guixvis running to open one.
+
+Click a graph node to follow it. Right-click the canvas or press the visible
+**Back** button to return one step in Guixvis graph navigation, restoring that
+view's package, depth, and direction. At the first in-app view, Back is disabled;
+it cannot take you to an earlier website. The
+browser's own Back and Forward controls still work for normal page history.
+Reloading or editing the address creates a new in-app Back boundary.
+
+**Graph style** offers labeled **Bubbles** and **Rectangles**; the selection is
+saved in this browser. Bubble labels prioritize the root, selection, and
+high-degree nodes that fit. Rectangles show names inside the shapes, shortening
+long names. Hover a node for its tooltip, or focus the canvas and use arrow
+keys to select a node, then `Enter` to follow it. Drag a node with the primary
+mouse button; drag the background to pan. The wheel zooms, and a two-finger
+pinch zooms on a touch screen. Those gestures do not follow a node. On touch,
+a brief tap follows one; a long press shows its details. The visible Back
+button remains available without a mouse.
 
 ## Use the package
 

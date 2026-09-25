@@ -6,11 +6,11 @@ package, see everything **related** to it, with fast fuzzy search and a
 polished, keyboard-first interface.
 
 [Português brasileiro](README.pt-BR.md) · [User guide](docs/usage.md) ·
-[Changes in 0.6.0](docs/releases/0.6.0.md) · [Security](SECURITY.md)
+[Changes in 0.7.0](docs/releases/0.7.0.md) · [Security](SECURITY.md)
 
-Version 0.6.0 adds a package list in the browser, copyable Guix commands,
-native Emacs search and details, and remembered terminal themes. It also fixes
-search edge cases, stale responses, and unsafe cache temporary-file handling.
+Version 0.7.0 keeps the selected package steady while you browse its terminal
+trees, lets a followed graph retain its root and depth, and adds safer Back
+navigation and two persistent, labeled graph styles in the browser.
 
 ```
 ┌─ Search: emac▌────────────────────────────────────────────────┐
@@ -48,7 +48,8 @@ whatever does not suit you.
 - **Reverse dependencies** — "who depends on this package": direct list plus
   a depth-limited transitive section.
 - **Dependency graph** — force-directed layout (hand-rolled Fruchterman–
-  Reingold, deterministic), follow nodes with Enter, depth control with `+/−`.
+  Reingold, deterministic); follow nodes with Enter, keep the chosen depth
+  across tabs, and press `g` to return to the Overview package.
 - **Instant startup on later runs** — the index is cached as a binary
   snapshot and automatically rebuilt when your Guix channel commit changes;
   the empty search box browses the highest-fan-in hubs instead of the
@@ -59,23 +60,15 @@ whatever does not suit you.
   `guix show`, and `guix shell` commands from the browser or Emacs. You choose
   when to run them; browsing never changes your profile.
 
-## Demo video
-
-[![Watch the guixvis demo — click to play](assets/guixvis-overview.png)](assets/guixvis-demo.mp4)
-
 ## Screenshots
 
-Search and package details:
+Terminal search and package details:
 
-![guixvis overview — fuzzy search results and package details](assets/guixvis-overview.png)
+![Guixvis 0.7 terminal Overview with search results and package details](assets/guixvis-tui-overview-0.7.png)
 
-Dependency tree (expand/collapse with Enter):
+Terminal dependency graph:
 
-![guixvis dependencies — expandable dependency tree](assets/guixvis-dependencies.png)
-
-Reverse dependencies (who depends on this package):
-
-![guixvis reverse dependencies — packages that depend on the selected package](assets/guixvis-reverse.png)
+![Guixvis 0.7 terminal graph with package labels](assets/guixvis-tui-graph-0.7.png)
 
 ## Web UI
 
@@ -84,7 +77,10 @@ Reverse dependencies (who depends on this package):
 panel with clickable related-package chips, and the interactive graph where
 every bubble is a package — click one to open its view. Deep links
 (`#/p/emacs?depth=2&dir=reverse`) are shareable and work with the browser
-back button; the layout is responsive down to phone sizes. Result rows carry
+back button. Right-click the canvas or use its visible **Back** button to
+return one Guixvis graph step, restoring its package, depth, and direction.
+At the first in-app view, Back is disabled and cannot leave the site. The
+layout works on phone sizes. Result rows carry
 the license chip and the dependency/dependent counts, and a name that only
 matched through its synopsis renders dimmed — so "why is this here?" answers
 itself.
@@ -94,20 +90,18 @@ shows the version, synopsis, license, and dependency counts. The list displays
 up to 100 ranked results; narrow the query when it reaches that limit. Switch
 back to **Graph** whenever you want to follow the connections.
 
-Names above the bubbles are placed with measured boxes and a background halo:
-labels that would collide are simply not drawn (the hover tooltip still names
-every bubble), so the graph stays legible instead of turning into a pile of
-overlapping text.
+Choose **Bubbles** or **Rectangles** under Graph style. The choice persists in
+this browser. Bubbles keep readable labels for the root, selection, and hubs
+that fit; rectangles put a name inside each shape, shortening long names.
+Hover a node or select it with the keyboard to inspect it. Drag with the
+primary mouse button to move a node, drag the background to pan, scroll to
+zoom, or pinch to zoom on touch screens. These gestures do not follow a package.
 
-![guixvis web — tron theme, black page and neon bubbles](assets/guixvis-web-tron.png)
+![Guixvis 0.7 web graph with labeled bubbles](assets/guixvis-web-bubbles-0.7.png)
 
-▶ [Watch the web UI demo](assets/guixvis-web-demo.mp4)
+![Guixvis 0.7 web graph with labeled rectangles](assets/guixvis-web-rectangles-0.7.png)
 
-![guixvis web desktop — package graph with clickable bubbles](assets/guixvis-web-desktop.png)
-
-![guixvis web packages — click a bubble to open that package](assets/guixvis-web-packages.png)
-
-![guixvis web mobile — responsive layout](assets/guixvis-web-mobile.png)
+![Guixvis 0.7 responsive web view on a narrow screen](assets/guixvis-web-mobile-0.7.png)
 
 ## Themes
 
@@ -124,18 +118,6 @@ bubbles, which is what you want on an OLED panel at night.
   between sessions. **System** follows your operating system's light/dark
   preference and is the default for new users. Reduced-motion preferences
   are respected, and settled graphs stop requesting animation frames.
-
-The TUI in the dracula theme:
-
-![guixvis TUI — dracula theme](assets/guixvis-tui-dracula.png)
-
-The package list and command previews in 0.6.0, using the nord theme:
-
-![Guixvis 0.6.0 package list and command previews](assets/guixvis-packages-0.6.png)
-
-The graph in the nord theme:
-
-![guixvis web — nord theme](assets/guixvis-web-nord.png)
 
 ## Requirements
 
@@ -180,21 +162,21 @@ The channel builds guixvis from source with a vendored Cargo registry
 
 Source releases are available as `guixvis-<version>.zupt`, a
 [zupt](https://git.securityops.com.br/cristiancmoises/zupt) archive written with
-the maximum compression level and **no password**, so anyone can open it. To
-download the archive and `SHA256SUMS` from the
-[0.6.0 release](https://codeberg.org/berkeley/guixvis/releases/tag/v0.6.0), then:
+the maximum compression level and **no password**, so anyone can open it.
+Once published, download the archive and `SHA256SUMS` from the
+[0.7.0 release](https://codeberg.org/berkeley/guixvis/releases/tag/v0.7.0), then:
 
 ```sh
 sha256sum -c SHA256SUMS
-zupt test    guixvis-0.6.0.zupt    # verify archive integrity
-zupt list    guixvis-0.6.0.zupt    # inspect paths before extracting
-zupt extract guixvis-0.6.0.zupt    # creates ./guixvis-0.6.0/
+zupt test    guixvis-0.7.0.zupt    # verify archive integrity
+zupt list    guixvis-0.7.0.zupt    # inspect paths before extracting
+zupt extract guixvis-0.7.0.zupt    # creates ./guixvis-0.7.0/
 ```
 
 Then build it the normal way:
 
 ```sh
-cd guixvis-0.6.0
+cd guixvis-0.7.0
 cargo build --locked --release --features web
 ```
 
@@ -248,13 +230,13 @@ guixvis --help       all options
 | `Esc` | clear search / back out |
 | `Tab` / `Shift+Tab` | cycle tabs |
 | `1`–`4` | jump to tab (Overview, Dependencies, Reverse deps, Graph) |
-| `↑` `↓` (or `j` `k` with empty search) | move selection |
-| `PgUp` / `PgDn` | page |
-| `Enter` | expand/collapse tree node · follow graph node |
+| `↑` `↓` (or `j` `k` with empty search) | move the current tab's cursor |
+| `PgUp` / `PgDn` | page the current list or tree |
+| `Enter` | expand/collapse tree row · follow graph node |
 | `d` / `r` / `v` (empty search) | open dependencies / reverse deps / graph |
 | `h` / `l` or `←` / `→` | collapse / expand tree node |
 | `+` / `−` | graph depth (1–8) |
-| `g` / `G` (empty search) | top / bottom (graph: refocus root) |
+| `g` / `G` (empty search) | top / bottom of list or tree (`g` in graph: refocus on Overview package) |
 | `o` (empty search) | open homepage in `$BROWSER`/`xdg-open` |
 | `T` | cycle and save theme (9 palettes) |
 | `R` | rebuild the index in the background |
@@ -268,11 +250,17 @@ arrow keys to navigate while typing.
 ### Tabs
 
 1. **Overview** — result list + detail pane.
-2. **Dependencies** — expandable tree of what the package needs.
+2. **Dependencies** — expandable tree of what the Overview package needs.
 3. **Reverse deps** — direct dependents (expandable) + transitive section
    (depth 2+, press Enter on the section header to open it).
 4. **Graph** — force-directed dependency graph; Enter follows a node,
-   `+`/`−` adjusts depth, `g` refocuses the root on the selected package.
+   `+`/`−` adjusts depth, and `g` returns the root to the Overview package.
+
+The search text stays visible in the bordered header, including at narrow
+terminal widths. Moving through a dependency tree changes only that tree's
+row. Your Overview package stays selected when you switch tabs. Following a
+graph node changes the graph root; that root and its depth survive drawing and
+tab switches until you choose a new Overview result or press `g` in the graph.
 
 ## How it works
 
@@ -309,8 +297,6 @@ a picture — and then it was a readable picture that still looked like tangled
 yarn. It is now calm as well: small dots, edges faded into the background, and
 only the labels that earn their space.
 
-![guixvis TUI — dependency graph with depth colours and a legend](assets/guixvis-tui-graph.png)
-
 - **Small bubbles.** Nodes are dots; hubs grow just enough to be findable, so
   two hundred of them stop looking like a smear.
 - **Size** is fan-in plus fan-out.
@@ -321,7 +307,7 @@ only the labels that earn their space.
 - **Selection** gets a halo, its neighbours brighten, everything else fades
   back — handy in a dense cluster.
 - **Labels** are drawn for the selection, the root and the biggest hubs that fit
-  the terminal width.
+  the terminal width. On narrow terminals, the root and selection take priority.
 - The header reports nodes, edges, hidden nodes and how long the layout took;
   the footer shows the selected package with its dependency counts.
 
@@ -341,7 +327,7 @@ browser's graph layout code separately.
 
 The table below records measurements from earlier releases on a 32,500-package
 index. Your channel, machine, and cache state affect the result; these are not
-latency guarantees. See the [0.6.0 notes](docs/releases/0.6.0.md) for this
+latency guarantees. See the [0.7.0 notes](docs/releases/0.7.0.md) for this
 release's changes and verification.
 
 | Step | Time | Notes |
@@ -393,7 +379,7 @@ for the trust boundaries and remaining limitations.
 cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features            # unit + fixture + web tests
-node --test tests/web_graph_tests.cjs         # browser graph logic
+node --test tests/web_graph_tests.cjs tests/web_app_tests.cjs  # browser graph and app logic
 emacs -Q --batch -L elisp -l elisp/guixvis-tests.el -f ert-run-tests-batch-and-exit
 cargo test --test live_guix_tests -- --ignored   # live tests against real Guix
 cargo test --release --test live_guix_tests real_index_search_latency -- --ignored

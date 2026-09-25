@@ -7,12 +7,11 @@ pacvis do Arch: pesquise **qualquer** pacote, veja tudo que está
 100% pelo teclado.
 
 [English](README.md) · [Guia de uso](docs/usage.md) ·
-[Mudanças na versão 0.6.0](docs/releases/0.6.0.md) · [Segurança](SECURITY.md)
+[Mudanças na versão 0.7.0](docs/releases/0.7.0.md) · [Segurança](SECURITY.md)
 
-A versão 0.6.0 traz uma lista de pacotes no navegador, comandos Guix para
-copiar, busca e detalhes nativos no Emacs e temas persistentes no terminal.
-Também corrige casos de busca, respostas atrasadas e a criação de arquivos
-temporários do cache.
+A versão 0.7.0 mantém o pacote selecionado enquanto você percorre as árvores
+no terminal, preserva a raiz e a profundidade do grafo seguido e acrescenta
+uma navegação Voltar segura e dois estilos de grafo persistentes no navegador.
 
 ```
 ┌─ Busca: emac▌────────────────────────────────────────────────┐
@@ -49,7 +48,8 @@ mudar o que não te agradar.
 - **Dependências reversas** — "quem depende deste pacote": lista direta e
   uma seção transitiva com limite de profundidade.
 - **Grafo de dependências** — layout dirigido por forças (Fruchterman–
-  Reingold determinístico), siga nós com Enter, profundidade com `+/−`.
+  Reingold determinístico); siga nós com Enter, mantenha a profundidade ao
+  trocar de aba e pressione `g` para voltar ao pacote da Visão geral.
 - **Inicialização instantânea depois da primeira vez** — o índice fica em
   cache binário e é reconstruído automaticamente quando o commit do seu
   canal Guix muda.
@@ -59,23 +59,15 @@ mudar o que não te agradar.
   consulta e `guix shell` no navegador ou no Emacs. Você decide quando
   executá-los; navegar pelos pacotes não altera seu perfil.
 
-## Vídeo de demonstração
-
-[![Assista à demonstração do guixvis — clique para reproduzir](assets/guixvis-overview.png)](assets/guixvis-demo.mp4)
-
 ## Capturas de tela
 
-Busca e detalhes do pacote:
+Busca e detalhes do pacote no terminal:
 
-![guixvis visão geral — resultados da busca fuzzy e detalhes do pacote](assets/guixvis-overview.png)
+![Guixvis 0.7: Visão geral no terminal com busca e detalhes do pacote](assets/guixvis-tui-overview-0.7.png)
 
-Árvore de dependências (expanda/recolha com Enter):
+Grafo de dependências no terminal:
 
-![guixvis dependências — árvore expansível de dependências](assets/guixvis-dependencies.png)
-
-Dependências reversas (quem depende deste pacote):
-
-![guixvis dependências reversas — pacotes que dependem do pacote selecionado](assets/guixvis-reverse.png)
+![Guixvis 0.7: grafo no terminal com rótulos de pacotes](assets/guixvis-tui-graph-0.7.png)
 
 ## Interface web
 
@@ -84,7 +76,10 @@ O `guixvis web` serve o mesmo explorador como um site local em
 clicáveis de pacotes relacionados e o grafo interativo em que cada bolha é
 um pacote — clique em uma para abrir a visão dela. Links diretos
 (`#/p/emacs?depth=2&dir=reverse`) são compartilháveis e funcionam com o
-botão voltar do navegador; o layout é responsivo até em telas de celular.
+botão voltar do navegador. Clique com o botão direito no grafo ou use o botão
+**Back** visível para voltar um passo no guixvis, restaurando pacote,
+profundidade e direção. Na primeira visão interna, o botão fica desativado
+e não sai do site. O layout se adapta a celulares.
 
 Clique em **Packages** para manter os resultados na tela, com versão,
 sinopse, licença e contagens de dependências. A lista mostra até 100
@@ -92,20 +87,19 @@ resultados ordenados; refine a busca quando atingir esse limite. O botão
 **Graph** volta ao grafo. Nos detalhes, os comandos Guix ficam disponíveis
 para revisão e cópia.
 
-Os nomes acima das bolhas são posicionados com caixas medidas e um halo na cor
-do fundo: rótulos que colidiriam simplesmente não são desenhados (o tooltip ao
-passar o mouse continua nomeando cada bolha), então o grafo fica legível em vez
-de virar uma pilha de textos sobrepostos.
+Em **Graph style**, escolha **Bubbles** ou **Rectangles**. O navegador lembra
+a escolha. As bolhas mostram rótulos da raiz, da seleção e dos nós maiores
+que couberem; os retângulos trazem o nome dentro da forma, abreviado quando
+necessário. Passe o mouse sobre um nó ou selecione-o pelo teclado para
+inspecioná-lo. Arraste com o botão principal para mover um nó, arraste o fundo
+para deslocar o grafo, use a roda para ampliar ou faça pinça na tela sensível
+ao toque. Esses gestos não abrem outro pacote.
 
-![guixvis web — tema tron, página preta e bolhas neon](assets/guixvis-web-tron.png)
+![Guixvis 0.7: grafo web com bolhas rotuladas](assets/guixvis-web-bubbles-0.7.png)
 
-▶ [Assista à demonstração da interface web](assets/guixvis-web-demo.mp4)
+![Guixvis 0.7: grafo web com retângulos rotulados](assets/guixvis-web-rectangles-0.7.png)
 
-![guixvis web desktop — grafo de pacotes com bolhas clicáveis](assets/guixvis-web-desktop.png)
-
-![guixvis web pacotes — clique numa bolha para abrir o pacote](assets/guixvis-web-packages.png)
-
-![guixvis web mobile — layout responsivo](assets/guixvis-web-mobile.png)
+![Guixvis 0.7: interface web responsiva em tela estreita](assets/guixvis-web-mobile-0.7.png)
 
 ## Temas
 
@@ -122,18 +116,6 @@ As duas interfaces trazem nove temas de cores: **dark** (padrão da TUI), **one*
   entre as sessões. **System**, o padrão para novos usuários, acompanha o
   modo claro/escuro do sistema. A preferência por movimento reduzido também
   é respeitada, e o grafo para de redesenhar quando estabiliza.
-
-A TUI no tema dracula:
-
-![guixvis TUI — tema dracula](assets/guixvis-tui-dracula.png)
-
-A lista de pacotes e os comandos da versão 0.6.0, no tema nord:
-
-![Guixvis 0.6.0 — lista de pacotes e comandos para copiar](assets/guixvis-packages-0.6.png)
-
-O grafo no tema nord:
-
-![guixvis web — tema nord](assets/guixvis-web-nord.png)
 
 ## Requisitos
 
@@ -177,21 +159,21 @@ vendado (offline, `cargo --frozen`), incluindo a interface web
 
 Os fontes publicados em cada forja saem como `guixvis-<versão>.zupt`, um arquivo
 [zupt](https://git.securityops.com.br/cristiancmoises/zupt) gerado no nível
-máximo de compressão e **sem senha**, então qualquer pessoa consegue abrir. Para
-descompactar, baixe o arquivo e `SHA256SUMS` na
-[release 0.6.0](https://codeberg.org/berkeley/guixvis/releases/tag/v0.6.0):
+máximo de compressão e **sem senha**, então qualquer pessoa consegue abrir.
+Depois da publicação, baixe o arquivo e `SHA256SUMS` na
+[release 0.7.0](https://codeberg.org/berkeley/guixvis/releases/tag/v0.7.0):
 
 ```sh
 sha256sum -c SHA256SUMS
-zupt test    guixvis-0.6.0.zupt    # verifica a integridade do arquivo
-zupt list    guixvis-0.6.0.zupt    # confira os caminhos antes de extrair
-zupt extract guixvis-0.6.0.zupt    # cria ./guixvis-0.6.0/
+zupt test    guixvis-0.7.0.zupt    # verifica a integridade do arquivo
+zupt list    guixvis-0.7.0.zupt    # confira os caminhos antes de extrair
+zupt extract guixvis-0.7.0.zupt    # cria ./guixvis-0.7.0/
 ```
 
 Depois é compilar normalmente:
 
 ```sh
-cd guixvis-0.6.0
+cd guixvis-0.7.0
 cargo build --locked --release --features web
 ```
 
@@ -245,13 +227,13 @@ guixvis --help       todas as opções
 | `Esc` | limpar busca / voltar |
 | `Tab` / `Shift+Tab` | alternar abas |
 | `1`–`4` | ir para a aba (Visão geral, Dependências, Deps reversas, Grafo) |
-| `↑` `↓` (ou `j` `k` com busca vazia) | mover seleção |
-| `PgUp` / `PgDn` | paginar |
-| `Enter` | expandir/recolher nó da árvore · seguir nó do grafo |
+| `↑` `↓` (ou `j` `k` com busca vazia) | mover o cursor da aba atual |
+| `PgUp` / `PgDn` | paginar a lista ou árvore atual |
+| `Enter` | expandir/recolher linha da árvore · seguir nó do grafo |
 | `d` / `r` / `v` (busca vazia) | abrir dependências / deps reversas / grafo |
 | `h` / `l` ou `←` / `→` | recolher / expandir nó da árvore |
 | `+` / `−` | profundidade do grafo (1–8) |
-| `g` / `G` (busca vazia) | topo / fim (no grafo: refocar a raiz) |
+| `g` / `G` (busca vazia) | topo / fim da lista ou árvore (`g` no grafo: voltar ao pacote da Visão geral) |
 | `o` (busca vazia) | abrir homepage no `$BROWSER`/`xdg-open` |
 | `T` | alternar tema (9 paletas) |
 | `R` | reconstruir o índice em segundo plano |
@@ -265,11 +247,18 @@ setas para navegar enquanto digita.
 ### Abas
 
 1. **Visão geral** — lista de resultados + painel de detalhes.
-2. **Dependências** — árvore expansível do que o pacote precisa.
+2. **Dependências** — árvore expansível do que o pacote da Visão geral precisa.
 3. **Deps reversas** — dependentes diretos (expansíveis) + seção transitiva
    (profundidade 2+; pressione Enter no cabeçalho da seção para abrir).
 4. **Grafo** — grafo de dependências por forças; Enter segue um nó,
-   `+`/`−` ajusta a profundidade, `g` refoca a raiz no pacote selecionado.
+   `+`/`−` ajusta a profundidade, e `g` retorna ao pacote da Visão geral.
+
+A busca permanece visível no cabeçalho com borda, inclusive em terminais
+estreitos. Percorrer uma árvore move somente o cursor dessa árvore. O pacote
+da Visão geral continua selecionado quando você troca de aba. Seguir um nó
+muda a raiz do grafo; a raiz e a profundidade permanecem ao redesenhar e
+trocar de aba, até você escolher outro resultado na Visão geral ou pressionar
+`g` no grafo.
 
 ## Como funciona
 
@@ -301,8 +290,6 @@ imagem — e depois virou uma imagem legível que ainda parecia um novelo. Agora
 também está calmo: pontos pequenos, arestas apagadas no fundo, e só os rótulos
 que merecem o espaço.
 
-![guixvis TUI — grafo de dependências com cores por profundidade e legenda](assets/guixvis-tui-graph.png)
-
 - **Bolhas pequenas.** Os nós são pontos; os hubs crescem só o suficiente para
   serem achados, e duzentos deles deixam de virar borrão.
 - **Tamanho** é fan-in mais fan-out.
@@ -313,7 +300,7 @@ que merecem o espaço.
 - **Seleção** ganha um halo, os vizinhos clareiam e o resto escurece — ajuda em
   aglomerado denso.
 - **Rótulos** aparecem para a seleção, a raiz e os maiores hubs que couberem na
-  largura do terminal.
+  largura do terminal. Em terminais estreitos, a raiz e a seleção têm prioridade.
 - O cabeçalho mostra nós, arestas, nós ocultos e o tempo do layout; o rodapé
   mostra o pacote selecionado com as contagens de dependências.
 
@@ -333,7 +320,7 @@ layout do grafo do navegador.
 
 Esta tabela registra medições de versões anteriores, com 32.500 pacotes.
 Os tempos variam conforme a máquina, os canais e o estado do cache; não são
-garantias de latência. As [notas da versão 0.6.0](docs/releases/0.6.0.md)
+garantias de latência. As [notas da versão 0.7.0](docs/releases/0.7.0.md)
 descrevem as mudanças e a validação desta versão.
 
 | Etapa | Tempo | Observação |
@@ -385,7 +372,7 @@ para os limites dessa proteção.
 cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features            # testes unitários, fixtures e web
-node --test tests/web_graph_tests.cjs
+node --test tests/web_graph_tests.cjs tests/web_app_tests.cjs
 emacs -Q --batch -L elisp -l elisp/guixvis-tests.el -f ert-run-tests-batch-and-exit
 cargo test --test live_guix_tests -- --ignored   # testes reais contra o Guix
 ```
