@@ -137,21 +137,39 @@ motion, pauses graph animation when hidden, and stops redrawing a settled graph.
 
 ## Emacs
 
-Use Emacs 27.1 or newer and add the included Lisp directory:
+Use Emacs 27.1 or newer. For the default Guix profile, add its installed Lisp
+directory (including when testing with `emacs -Q`):
 
 ```elisp
-(add-to-list 'load-path "/path/to/guixvis/elisp")
+(add-to-list 'load-path (expand-file-name "~/.guix-profile/share/emacs/site-lisp"))
 (require 'guixvis)
 ```
+
+For a source checkout, use `/path/to/guixvis/elisp` instead. After upgrading,
+restart Emacs or reload both libraries so an already-loaded older definition
+does not remain active. If you byte-compiled a checkout yourself, rebuild its
+`.elc` files or set `load-prefer-newer` to non-nil; Emacs otherwise may load
+an older compiled file instead of the changed source. The installed Guix
+package ships the two source libraries together.
+
+If graphical Emacs aborts before loading Guixvis with an undefined SVG-loader
+symbol, check for mixed Guix GTK/image-loader caches from different profiles.
+Use loaders compatible with that Emacs build. This is an editor startup
+environment problem, not a package search or graph error; upgrading Guixvis
+alone does not repair those profiles.
 
 Start `guixvis web` separately. Then run `M-x guixvis-search` and enter a
 query, or `M-x guixvis-package` and enter an exact package name. Requests run
 asynchronously; a slow service does not block editing. New requests supersede
-old ones, and failures explain how to start or configure the service.
+old ones, even if you change the buffer's major mode. Closing a native view
+cancels its outstanding request. Failures remove old actionable results and
+explain how to start or configure the service. HTTP 503 can mean the index is
+still building or that the service is busy; wait and refresh.
 
 | Key | Search buffer | Package buffer |
 | --- | --- | --- |
 | `RET` | Open the package at point | Follow the package button at point |
+| `v` | Graph the exact package at point | Graph the current/related package |
 | `s` | Search again | Start a search |
 | `g` | Refresh results | Refresh details |
 | `w` | Choose a command to copy | Choose a command to copy |
@@ -165,10 +183,56 @@ elsewhere it uses the current package. `/` also starts a search from the
 results buffer. Results can be sorted using the table headers, including numeric
 dependency counts. Native buffers inherit your Emacs theme.
 
+The Variant column shows the snapshot-scoped object ID and whether a package
+is in the catalog or is a private dependency variant. Rows with the same name
+and version remain separate. The search header warns about incomplete
+extraction and reports the result cap; increasing `guixvis-search-limit` does
+not make an incomplete index complete.
+
 Search rows and related-package buttons retain exact IDs and snapshot tokens.
 Refresh never replaces an expired reference with another same-name variant.
 A stale snapshot clears the old details and asks you to search again. Details
 also show the selected Guix origin and whether it could be verified.
+
+### Native graphs
+
+Press `v` in search or details, or use `M-x guixvis-graph` to enter a package
+name. Keep `guixvis.el` and `guixvis-graph.el` together on `load-path`; the
+graph module loads when needed. No external graph renderer is required.
+
+The graph begins at one hop. Depth groups make names, versions, input kinds
+and variant IDs readable; the adjacency section lists actual edges. A shared
+dependency or cycle is not turned into a misleading tree. Follow a package
+button with `RET`, then use `l` to restore the previous root, direction,
+depth, filter and selected variant. Navigation retains up to 32 views.
+
+| Key | Native graph action |
+| --- | --- |
+| `RET` | Follow the package button at point |
+| `TAB` / `Shift+TAB` | Move between package buttons |
+| `p` | Open exact package details |
+| `d` | Switch dependencies / reverse dependencies |
+| `+` / `-` | Increase / decrease depth, from 1 to 8 |
+| `/` | Filter this graph's displayed nodes |
+| `l` | Go back one graph step |
+| `g` | Refresh the current graph |
+| `s` | Search the whole package index |
+| `w` | Copy a command for the package at point |
+| `q` | Quit the window |
+
+Graph filtering is case-insensitive and literal, with queries up to 200
+characters. It only searches the current
+projection, not all reachable dependencies; the root remains visible for
+context. Projections contain at most 200 nodes and 3,000 edges. The header
+distinguishes displayed nodes, discovered totals, unknown totals and omitted
+edges, and warns about extraction diagnostics. For complete declared direct
+inputs, open package details with `p`; for another catalog package, use `s`.
+The graph rejects versions longer than 512 characters to keep repeated edge
+labels bounded. Package details remain available for unusual metadata.
+
+Exact graph references belong to one snapshot. If the service replaces it,
+the client clears the old graph and navigation history and asks for a fresh
+search. It does not silently follow a different same-name package.
 
 Settings are available through `M-x customize-group RET guixvis`:
 

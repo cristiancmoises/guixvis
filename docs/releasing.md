@@ -15,10 +15,12 @@ bundle. Building it needs Rust 1.88+ and the locked crates; running it needs Gui
 
 1. Confirm the version, clean working tree, Git identity, existing remote tags,
    and authenticated account on each forge. Never move a published tag.
-2. Run the checks in the README and the [0.9.0 notes](releases/0.9.0.md):
+2. Run the checks in the README and the [0.10.0 notes](releases/0.10.0.md):
    formatting, all-target/all-feature Clippy, default and all-feature tests,
    both JavaScript suites, live Guix checks, Emacs ERT and warnings-as-errors
-   byte compilation, a release build, and `cargo audit`. Exercise terminal
+   byte compilation of both libraries, compiled ERT, a release build, and
+   `cargo audit`. Exercise native Emacs search, exact details and both graph
+   directions against the actual local service. Exercise terminal
    navigation in a real PTY and browser interactions in isolated Chromium.
    Review the release notes. Install and verify the candidate locally first,
    then wait for the owner's explicit publication approval before committing.
@@ -29,16 +31,16 @@ bundle. Building it needs Rust 1.88+ and the locked crates; running it needs Gui
    encryption:
 
    ```sh
-   zupt compress -l 9 guixvis-0.9.0.zupt guixvis-0.9.0
-   zupt test guixvis-0.9.0.zupt
-   zupt list guixvis-0.9.0.zupt
+   zupt compress -l 9 guixvis-0.10.0.zupt guixvis-0.10.0
+   zupt test guixvis-0.10.0.zupt
+   zupt list guixvis-0.10.0.zupt
    ```
 
 5. Extract into another fresh directory with `zupt extract -o <directory>`.
    Compare paths, file contents, and executable bits against the committed
    tree. Scan the export for secrets. Stop on any unexpected file or mismatch.
 6. In the output directory, create `SHA256SUMS` with
-   `sha256sum guixvis-0.9.0.zupt > SHA256SUMS`, then run
+   `sha256sum guixvis-0.10.0.zupt > SHA256SUMS`, then run
    `sha256sum -c SHA256SUMS`.
 
 ## Native Guix installation
@@ -53,7 +55,8 @@ the recipe and resolved package version before installing. Change only
 Guixvis in the existing profile, retaining the previous profile generation
 for recovery. Confirm that the `guixvis` found on `PATH` reports the new version,
 that `guixvis web` serves the local browser and Emacs API, and that the
-installed Emacs library loads. Record the profile generation and results in
+installed `guixvis.el` and `guixvis-graph.el` libraries load and navigate
+correctly. Check that unrelated profile entries are unchanged. Record the profile generation and results in
 the delivery report.
 
 ## Publish and verify

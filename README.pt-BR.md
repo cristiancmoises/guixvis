@@ -7,12 +7,12 @@ pacvis do Arch: pesquise **qualquer** pacote, veja tudo que está
 100% pelo teclado.
 
 [English](README.md) · [Guia de uso](docs/usage.md) ·
-[Mudanças na versão 0.9.0](docs/releases/0.9.0.md) · [Segurança](SECURITY.md)
+[Mudanças na versão 0.10.0](docs/releases/0.10.0.md) · [Segurança](SECURITY.md)
 
-A versão 0.9.0 elimina trabalho repetido na busca de dependências reversas,
-mantém os nós arrastados no lugar durante a separação do grafo e reforça o
-tratamento de cache e requisições HTTP. A busca completa de relações, o grafo
-inicial de um nível e as identidades exatas dos pacotes continuam preservados.
+A versão 0.10.0 traz a navegação de grafos para dentro do Emacs. A pesquisa
+distingue melhor as variantes de mesmo nome e não deixa uma resposta antiga
+substituir a visão atual. Dá para seguir dependências ou dependentes, filtrar
+o grafo e voltar ao pacote anterior sem sair do editor.
 
 ## Uma nota do autor
 
@@ -37,14 +37,16 @@ mudar o que não te agradar.
 - Cache binário com origem identificada: executável do Guix, sistema e commits
   de todos os canais.
 - Comandos do Guix para revisar e copiar. Navegar não instala nem remove nada.
+- Pesquisa, detalhes e grafo nativos do Emacs, com navegação pelo teclado e
+  as cores do tema do editor.
 
 ## Capturas de tela
 
-Capturas da candidata 0.9.0 rodando localmente, usando o índice real do Guix.
+Capturas da candidata 0.10.0 rodando localmente, usando o índice real do Guix.
 
-![Guixvis 0.9: busca no terminal e detalhes do pacote](assets/guixvis-tui-overview-0.9.0.png)
+![Guixvis 0.10: busca no terminal e detalhes do pacote](assets/guixvis-tui-overview-0.10.0.png)
 
-![Guixvis 0.9: grafo de um nível ao lado da lista de pacotes](assets/guixvis-tui-graph-0.9.0.png)
+![Guixvis 0.10: grafo de um nível ao lado da lista de pacotes](assets/guixvis-tui-graph-0.10.0.png)
 
 ## Interface web
 
@@ -74,11 +76,11 @@ inspecioná-lo. Arraste com o botão principal para mover um nó, arraste o fund
 para deslocar o grafo, use a roda para ampliar ou faça pinça na tela sensível
 ao toque. Esses gestos não abrem outro pacote.
 
-![Guixvis 0.9: grafo web com bolhas](assets/guixvis-web-bubbles-0.9.0.png)
+![Guixvis 0.10: grafo web com bolhas](assets/guixvis-web-bubbles-0.10.0.png)
 
-![Guixvis 0.9: retângulos com zoom do navegador em 100%](assets/guixvis-web-rectangles-0.9.0.png)
+![Guixvis 0.10: retângulos com zoom do navegador em 100%](assets/guixvis-web-rectangles-0.10.0.png)
 
-![Guixvis 0.9: dependências do Python em tela estreita](assets/guixvis-web-mobile-0.9.0.png)
+![Guixvis 0.10: dependências do Python em tela estreita](assets/guixvis-web-mobile-0.10.0.png)
 
 ## Temas
 
@@ -140,26 +142,26 @@ Os fontes publicados em cada forja saem como `guixvis-<versão>.zupt`, um arquiv
 [zupt](https://git.securityops.com.br/cristiancmoises/zupt) gerado no nível
 máximo de compressão e **sem senha**, então qualquer pessoa consegue abrir.
 Depois da publicação, baixe o arquivo e `SHA256SUMS` na
-[release 0.9.0](https://codeberg.org/berkeley/guixvis/releases/tag/v0.9.0):
+[página de releases](https://codeberg.org/berkeley/guixvis/releases):
 
 ```sh
 sha256sum -c SHA256SUMS
-zupt test    guixvis-0.9.0.zupt    # verifica a integridade do arquivo
-zupt list    guixvis-0.9.0.zupt    # confira os caminhos antes de extrair
-zupt extract guixvis-0.9.0.zupt    # cria ./guixvis-0.9.0/
+zupt test    guixvis-0.10.0.zupt    # verifica a integridade do arquivo
+zupt list    guixvis-0.10.0.zupt    # confira os caminhos antes de extrair
+zupt extract guixvis-0.10.0.zupt    # cria ./guixvis-0.10.0/
 ```
 
 Depois é compilar normalmente:
 
 ```sh
-cd guixvis-0.9.0
+cd guixvis-0.10.0
 cargo build --locked --release --features web
 ```
 
 O `zupt` vem do canal securityops (`guix install zupt`) ou dos repositórios
 dele. As releases até a 0.3.0 foram repacotadas de `.tar.gz` para `.zupt`, então
-todas as versões agora saem no mesmo formato; o canal Guix mantém um `.tar.gz`
-simples como fonte do pacote, porque o daemon de build precisa descompactar sem
+todas as versões agora saem no mesmo formato; o canal Guix usa um arquivo tar
+como fonte do pacote, porque o daemon de build precisa descompactar sem
 ferramentas extras. Esses insumos internos são separados dos downloads de
 release: os novos arquivos publicados usam somente `.zupt`. Os links de fontes
 gerados automaticamente pelas forjas ainda podem oferecer outros formatos.
@@ -167,14 +169,17 @@ O [guia de publicação](docs/releasing.md) registra como empacotar e conferir.
 
 ### Emacs
 
-Carregue `elisp/guixvis.el` e inicie `guixvis web` em um terminal. Com
+Adicione o diretório `elisp` ao `load-path` e inicie `guixvis web` em um terminal. Com
 `M-x guixvis-search`, você pesquisa numa tabela nativa do Emacs sem bloquear
 o editor. `M-x guixvis-package` abre um pacote pelo nome. Use `RET` para os
-detalhes, `g` para atualizar, `s` para buscar, `w` para copiar um comando e
-`b` para abrir o navegador. Os comandos de pacote nunca rodam automaticamente.
+detalhes ou `v` para o grafo nativo. Nele, `RET` segue um pacote, `l` volta,
+`d` alterna dependências/dependentes, `+`/`-` mudam a profundidade e `/`
+filtra os nós exibidos. `g` atualiza, `s` pesquisa o catálogo e `w` copia um
+comando Guix. Os comandos de pacote nunca rodam automaticamente.
 
 ```elisp
-(add-to-list 'load-path "/caminho/para/guixvis/elisp")
+;; Perfil Guix padrão; no checkout dos fontes, use o diretório elisp.
+(add-to-list 'load-path (expand-file-name "~/.guix-profile/share/emacs/site-lisp"))
 (require 'guixvis)
 ;; Opcional, se você usa Emacs-Guix:
 ;; (guixvis-popup-install)
@@ -183,6 +188,10 @@ detalhes, `g` para atualizar, `s` para buscar, `w` para copiar um comando e
 `M-x guixvis` continua abrindo a TUI num buffer `term`, agora reutilizando
 o processo quando ele já está rodando. Configure `guixvis-web-url` se usar
 outra porta local. O [guia de uso](docs/usage.md#emacs) detalha as opções.
+
+![Guixvis 0.10: pesquisa nativa do Emacs com variantes](assets/guixvis-emacs-search-0.10.0.png)
+
+![Guixvis 0.10: grafo de dependências nativo do Emacs](assets/guixvis-emacs-graph-0.10.0.png)
 
 O arquivo fica aqui, e não no emacs-guix, para que as entradas do menu só
 apareçam para quem realmente tem o programa instalado (veja
@@ -343,7 +352,7 @@ cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features            # testes unitários, fixtures e web
 node --test tests/web_graph_tests.cjs tests/web_app_tests.cjs
-emacs -Q --batch -L elisp -l elisp/guixvis.el -l elisp/guixvis-tests.el -f ert-run-tests-batch-and-exit
+emacs -Q --batch -L elisp -l elisp/guixvis.el -l elisp/guixvis-graph.el -l elisp/guixvis-tests.el -l elisp/guixvis-graph-tests.el -f ert-run-tests-batch-and-exit
 cargo test --test live_guix_tests -- --ignored   # testes reais contra o Guix
 ```
 

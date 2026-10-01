@@ -6,12 +6,12 @@ package, see everything **related** to it, with fast fuzzy search and a
 polished, keyboard-first interface.
 
 [Português brasileiro](README.pt-BR.md) · [User guide](docs/usage.md) ·
-[Changes in 0.9.0](docs/releases/0.9.0.md) · [Security](SECURITY.md)
+[Changes in 0.10.0](docs/releases/0.10.0.md) · [Security](SECURITY.md)
 
-Version 0.9.0 removes repeated work from reverse-dependency browsing, keeps
-dragged graph nodes in place during separation, and tightens cache and HTTP
-resource handling. Full relation searches, one-hop terminal graphs, and exact
-Guix package identities remain unchanged.
+Version 0.10.0 brings graph browsing into Emacs itself. Search results make
+same-name variants easier to tell apart, and old requests cannot replace a
+new view. Follow dependencies or dependents, filter the current graph, and
+return to the previous package without leaving the editor.
 
 ## A note from the author
 
@@ -46,14 +46,16 @@ whatever does not suit you.
 - **Package commands** — preview and copy `guix install`, `guix remove`,
   `guix show`, and `guix shell` commands from the browser or Emacs. You choose
   when to run them; browsing never changes your profile.
+- **Native Emacs views** — asynchronous package search, exact details and a
+  keyboard-navigable dependency graph, using your editor's theme.
 
 ## Screenshots
 
-Captured from the 0.9.0 candidate running locally, using the real Guix index.
+Captured from the 0.10.0 candidate running locally, using the real Guix index.
 
-![Guixvis 0.9 terminal search and package details](assets/guixvis-tui-overview-0.9.0.png)
+![Guixvis 0.10 terminal search and package details](assets/guixvis-tui-overview-0.10.0.png)
 
-![Guixvis 0.9 one-hop terminal graph beside its package list](assets/guixvis-tui-graph-0.9.0.png)
+![Guixvis 0.10 one-hop terminal graph beside its package list](assets/guixvis-tui-graph-0.10.0.png)
 
 ## Web UI
 
@@ -83,11 +85,11 @@ Hover a node or select it with the keyboard to inspect it. Drag with the
 primary mouse button to move a node, drag the background to pan, scroll to
 zoom, or pinch to zoom on touch screens. These gestures do not follow a package.
 
-![Guixvis 0.9 web graph with bubbles](assets/guixvis-web-bubbles-0.9.0.png)
+![Guixvis 0.10 web graph with bubbles](assets/guixvis-web-bubbles-0.10.0.png)
 
-![Guixvis 0.9 web rectangles at 100% browser zoom](assets/guixvis-web-rectangles-0.9.0.png)
+![Guixvis 0.10 web rectangles at 100% browser zoom](assets/guixvis-web-rectangles-0.10.0.png)
 
-![Guixvis 0.9 Python dependencies on a narrow screen](assets/guixvis-web-mobile-0.9.0.png)
+![Guixvis 0.10 Python dependencies on a narrow screen](assets/guixvis-web-mobile-0.10.0.png)
 
 ## Themes
 
@@ -150,26 +152,26 @@ Source releases are available as `guixvis-<version>.zupt`, a
 [zupt](https://git.securityops.com.br/cristiancmoises/zupt) archive written with
 the maximum compression level and **no password**, so anyone can open it.
 Once published, download the archive and `SHA256SUMS` from the
-[0.9.0 release](https://codeberg.org/berkeley/guixvis/releases/tag/v0.9.0), then:
+[release page](https://codeberg.org/berkeley/guixvis/releases), then:
 
 ```sh
 sha256sum -c SHA256SUMS
-zupt test    guixvis-0.9.0.zupt    # verify archive integrity
-zupt list    guixvis-0.9.0.zupt    # inspect paths before extracting
-zupt extract guixvis-0.9.0.zupt    # creates ./guixvis-0.9.0/
+zupt test    guixvis-0.10.0.zupt    # verify archive integrity
+zupt list    guixvis-0.10.0.zupt    # inspect paths before extracting
+zupt extract guixvis-0.10.0.zupt    # creates ./guixvis-0.10.0/
 ```
 
 Then build it the normal way:
 
 ```sh
-cd guixvis-0.9.0
+cd guixvis-0.10.0
 cargo build --locked --release --features web
 ```
 
 `zupt` comes from the securityops channel (`guix install zupt`) or from its own
 repositories. Releases up to 0.3.0 were re-packed from `.tar.gz` into `.zupt`,
-so every version now ships in the same format; the Guix channel keeps a plain
-`.tar.gz` for its package source, because the build daemon has to unpack it
+so every version now ships in the same format; the Guix channel uses a tar
+archive for its package source, because the build daemon has to unpack it
 without extra tools. Those internal package inputs are separate from release
 downloads: new uploaded release archives use `.zupt` only. Forge-generated
 source links may still offer other formats. See [Releasing](docs/releasing.md)
@@ -177,14 +179,17 @@ for the packaging and verification checklist.
 
 ### Emacs
 
-Load `elisp/guixvis.el` to get the terminal launcher and a native package
-browser. Start `guixvis web` in a terminal, then use `M-x guixvis-search` for
+Add the bundled `elisp` directory to `load-path` to get the terminal launcher
+and native package views. Start `guixvis web` in a terminal, then use `M-x guixvis-search` for
 an asynchronous results table or `M-x guixvis-package` to look up a name.
-Press `RET` for details, `g` to refresh, `s` to search, `w` to copy a Guix
-command, and `b` to open the browser. No package commands run automatically.
+Press `RET` for details or `v` for the native graph. In that graph, `RET`
+follows a package, `l` goes back, `d` switches dependencies/dependents, `+`/`-`
+change depth and `/` filters the displayed nodes. `g` refreshes, `s` searches
+the catalog and `w` copies a Guix command. No package commands run automatically.
 
 ```elisp
-(add-to-list 'load-path "/path/to/guixvis/elisp")
+;; Default Guix profile; for a source checkout, use its elisp directory.
+(add-to-list 'load-path (expand-file-name "~/.guix-profile/share/emacs/site-lisp"))
 (require 'guixvis)
 ;; Optional, if you use Emacs-Guix:
 ;; (guixvis-popup-install)
@@ -193,6 +198,10 @@ command, and `b` to open the browser. No package commands run automatically.
 `M-x guixvis` runs the TUI in a reusable `term` buffer; `M-x guixvis-web`
 opens the local website. Set `guixvis-web-url` if you use a different local
 port. See the [Emacs guide](docs/usage.md#emacs) for the available settings.
+
+![Guixvis 0.10 native Emacs search with package variants](assets/guixvis-emacs-search-0.10.0.png)
+
+![Guixvis 0.10 native Emacs dependency graph](assets/guixvis-emacs-graph-0.10.0.png)
 
 The file ships here rather than in emacs-guix so the menu entries only show
 up for people who actually have the program installed (see
@@ -352,7 +361,7 @@ cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features            # unit + fixture + web tests
 node --test tests/web_graph_tests.cjs tests/web_app_tests.cjs  # browser graph and app logic
-emacs -Q --batch -L elisp -l elisp/guixvis.el -l elisp/guixvis-tests.el -f ert-run-tests-batch-and-exit
+emacs -Q --batch -L elisp -l elisp/guixvis.el -l elisp/guixvis-graph.el -l elisp/guixvis-tests.el -l elisp/guixvis-graph-tests.el -f ert-run-tests-batch-and-exit
 cargo test --test live_guix_tests -- --ignored   # live tests against real Guix
 cargo test --release --test live_guix_tests real_index_search_latency -- --ignored
 ```

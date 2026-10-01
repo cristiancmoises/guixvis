@@ -174,7 +174,7 @@
   (let ((buffer (generate-new-buffer " *guixvis terminal test*"))
         (executions 0))
     (unwind-protect
-        (cl-letf (((symbol-function 'get-buffer-create) (lambda (_) buffer))
+        (cl-letf (((symbol-function 'get-buffer-create) (lambda (_ &optional _inhibit-hooks) buffer))
                   ((symbol-function 'comint-check-proc) (lambda (_) t))
                   ((symbol-function 'term-exec) (lambda (&rest _) (cl-incf executions)))
                   ((symbol-function 'term-char-mode) #'ignore)
@@ -187,7 +187,7 @@
   (let ((buffer (generate-new-buffer " *guixvis terminal test*"))
         (executions 0))
     (unwind-protect
-        (cl-letf (((symbol-function 'get-buffer-create) (lambda (_) buffer))
+        (cl-letf (((symbol-function 'get-buffer-create) (lambda (_ &optional _inhibit-hooks) buffer))
                   ((symbol-function 'comint-check-proc) (lambda (_) nil))
                   ((symbol-function 'term-mode) #'ignore)
                   ((symbol-function 'term-exec)
@@ -215,7 +215,7 @@
       (should-not (buffer-live-p (aref (car requests) 2))))))
 
 (ert-deftest guixvis-http-errors-offer-recovery ()
-  (dolist (case '((503 "still building") (404 "not found") (302 "redirected")))
+  (dolist (case '((503 "temporarily unavailable") (404 "not found") (302 "redirected")))
     (guixvis-test--with-http
       (let ((failure nil))
         (guixvis--request "package/emacs" (lambda (_) (ert-fail "Unexpected success"))
@@ -266,7 +266,7 @@
       (guixvis-test--respond (car requests) 200
                             `((items . [,(guixvis-test--item "emacs")]) (capped . t)))
       (should (equal (caar tabulated-list-entries) "emacs"))
-      (should (equal " [1+ packages]" mode-line-process))
+      (should (string-match-p (regexp-quote "1+ packages") mode-line-process))
       (should (listp header-line-format))
       (goto-char (point-min))
       (should (equal (tabulated-list-get-id) "emacs")))))
@@ -286,6 +286,199 @@
         (funcall (cdr (cadr callbacks)) "Old error")
         (should (equal (caar tabulated-list-entries) "new"))
         (should-not (equal header-line-format "Old error"))))))
+
+(ert-deftest guixvis-mode-reset-discards-old-success-and-failure ()
+  (with-temp-buffer
+    (let (callbacks)
+      (cl-letf (((symbol-function 'guixvis--request)
+                 (lambda (_path success failure)
+                   (push (cons success failure) callbacks) nil)))
+        (guixvis-search-mode)
+        (guixvis--fetch "search?old" #'guixvis--render-search)
+        (fundamental-mode)
+        (guixvis-search-mode)
+        (guixvis--fetch "search?new" #'guixvis--render-search)
+        (funcall (caar callbacks) `((items . (,(guixvis-test--item "new")))))
+        (funcall (car (cadr callbacks)) `((items . (,(guixvis-test--item "old")))))
+        (funcall (cdr (cadr callbacks)) "Old error")
+        (should (equal (caar tabulated-list-entries) "new"))
+        (should-not (string-match-p "Old error" (format "%s" header-line-format)))))))
+
+(ert-deftest guixvis-mode-exit-and-kill-dispose-http-request ()
+  (dolist (exit '(fundamental-mode kill-buffer))
+    (guixvis-test--with-http
+      (let ((buffer (generate-new-buffer " *guixvis lifecycle*")) request timer)
+        (unwind-protect
+            (progn
+              (with-current-buffer buffer
+                (guixvis-search-mode)
+                (guixvis--fetch "search" #'guixvis--render-search)
+                (setq request guixvis--pending-request
+                      timer (guixvis--request-state-timer request))
+                (funcall exit))
+              (should (guixvis--request-state-done request))
+              (should-not (buffer-live-p (aref (car requests) 2)))
+              (should-not (memq timer timer-list)))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest guixvis-synchronous-completion-does-not-leave-pending-request ()
+  (with-temp-buffer
+    (guixvis-search-mode)
+    (cl-letf (((symbol-function 'guixvis--request)
+               (lambda (_path success _failure)
+                 (funcall success `((items . (,(guixvis-test--item "emacs")))))
+                 (guixvis--make-request-state :done t))))
+      (guixvis--fetch "search" #'guixvis--render-search)
+      (should (equal (caar tabulated-list-entries) "emacs"))
+      (should-not guixvis--pending-request))))
+
+(ert-deftest guixvis-fetch-custom-failure-cleans-own-state ()
+  (guixvis-test--with-http
+    (with-temp-buffer
+      (guixvis-search-mode)
+      (let (failure-buffer)
+        (guixvis--fetch "search" #'ignore
+                        (lambda (_text) (setq failure-buffer (current-buffer))))
+        (guixvis-test--respond (car requests) 503 nil)
+        (should (eq failure-buffer (current-buffer)))
+        (should-not guixvis--pending-request)))))
+
+(ert-deftest guixvis-search-error-removes-stale-actions ()
+  (guixvis-test--with-http
+    (with-temp-buffer
+      (guixvis-search-mode)
+      (guixvis--render-search `((items . (,(guixvis-test--item "emacs")))))
+      (guixvis--refresh-search)
+      (guixvis-test--respond (car requests) 503 nil)
+      (should-not guixvis--search-items)
+      (should-not tabulated-list-entries)
+      (should-not (guixvis--ref-at-point))
+      (should-error (guixvis-copy-command "install") :type 'user-error))))
+
+(ert-deftest guixvis-search-render-error-clears-stale-actions ()
+  (guixvis-test--with-http
+    (with-temp-buffer
+      (guixvis-search-mode)
+      (guixvis--render-search `((items . (,(guixvis-test--item "emacs")))))
+      (guixvis--refresh-search)
+      (guixvis-test--respond (car requests) 200 '((items) (complete . "false")))
+      (should-not (guixvis--ref-at-point))
+      (should (string-match-p "Invalid" (format "%s" header-line-format))))))
+
+(ert-deftest guixvis-shared-reference-path-validates-endpoint-and-identity ()
+  (let ((snapshot (make-string 64 ?a)))
+    (should (equal (guixvis--reference-path "graph" "gtk+" 0 snapshot)
+                   (concat "graph/gtk%2B?id=0&snapshot=" snapshot)))
+    (dolist (endpoint '("other" "../graph" graph nil))
+      (should-error (guixvis--reference-path endpoint "same" 0 snapshot) :type 'user-error))
+    (should-error (guixvis--reference-path "graph" "same" 0 (make-string 64 ?A))
+                  :type 'user-error)))
+
+(ert-deftest guixvis-search-variants-visible-and-selection-survives-reorder ()
+  (with-temp-buffer
+    (guixvis-search-mode)
+    (let* ((snapshot (make-string 64 ?a))
+           (items (mapcar (lambda (id)
+                            (append `((id . ,id) (snapshot . ,snapshot) (catalog . ,(zerop id)))
+                                    (guixvis-test--item "same"))) '(0 1))))
+      (guixvis--render-search `((items . ,items) (snapshot . ,snapshot)))
+      (should (string-match-p "ID 0.*catalog" (buffer-string)))
+      (should (string-match-p "ID 1.*private" (buffer-string)))
+      (should (equal (car (aref tabulated-list-format 4)) "Variant"))
+      (goto-char (point-min))
+      (forward-line 1)
+      (guixvis--render-search `((items . ,(reverse items)) (snapshot . ,snapshot)))
+      (should (equal (tabulated-list-get-id) (cons snapshot 1))))))
+
+(ert-deftest guixvis-search-incomplete-empty-and-capped-guidance ()
+  (with-temp-buffer
+    (guixvis-search-mode)
+    (guixvis--render-search '((items) (complete) (diagnostics_count . 3)))
+    (should (string-match-p "Incomplete index.*3" mode-line-process))
+    (should (string-match-p "No matches.*search" mode-line-process))
+    (should (listp header-line-format))
+    (guixvis--render-search `((items . (,(guixvis-test--item "emacs")))
+                             (complete . t) (capped . t)))
+    (should (string-match-p "1\\+ packages.*narrow" mode-line-process))
+    (should-not (string-match-p "Incomplete" mode-line-process))))
+
+(ert-deftest guixvis-search-rejects-malformed-optional-metadata ()
+  (with-temp-buffer
+    (guixvis-search-mode)
+    (dolist (metadata '(((complete . "false")) ((capped . 0))
+                        ((diagnostics_count . -1)) ((diagnostics_count . "3"))
+                        ((generation . -1)) ((snapshot . "bad"))))
+      (should-error (guixvis--render-search (append '((items)) metadata))))
+    (should-error (guixvis--render-search
+                   `((items . ,(make-list 501 (guixvis-test--item "emacs"))))))
+    (let ((snapshot (make-string 64 ?a)))
+      (should-error (guixvis--render-search
+                     `((snapshot . ,snapshot)
+                       (items . (,(append `((id . 0) (snapshot . ,(make-string 64 ?b)))
+                                           (guixvis-test--item "same")))))))
+      (should-error (guixvis--render-search
+                     `((items . (,(append `((id . 0) (snapshot . ,snapshot) (catalog . "yes"))
+                                           (guixvis-test--item "same"))))))))))
+
+(ert-deftest guixvis-search-rejects-mixed-row-snapshots-without-root-token ()
+  (with-temp-buffer
+    (guixvis-search-mode)
+    (should-error
+     (guixvis--render-search
+      `((items . (,(append `((id . 0) (snapshot . ,(make-string 64 ?a)))
+                           (guixvis-test--item "same"))
+                  ,(append `((id . 1) (snapshot . ,(make-string 64 ?b)))
+                           (guixvis-test--item "same")))))))))
+
+(ert-deftest guixvis-search-validates-name-match-boolean ()
+  (with-temp-buffer
+    (guixvis-search-mode)
+    (should-error (guixvis--render-search
+                   `((items . (,(append '((nameMatch . "yes"))
+                                         (guixvis-test--item "same")))))))))
+
+(ert-deftest guixvis-malformed-search-does-not-expose-response-values ()
+  (guixvis-test--with-http
+    (with-temp-buffer
+      (guixvis-search-mode)
+      (guixvis--refresh-search)
+      (guixvis-test--respond (car requests) 200 '((items . ("PRIVATE-FIXTURE-VALUE"))))
+      (should-not (string-match-p "PRIVATE-FIXTURE-VALUE"
+                                  (format "%s" header-line-format)))
+      (should-not guixvis--search-items))))
+
+(ert-deftest guixvis-http-synchronous-callback-cleans-response-once ()
+  (let ((response (generate-new-buffer " *guixvis sync HTTP*"))
+        (failures 0) (timers 0) request)
+    (unwind-protect
+        (cl-letf (((symbol-function 'url-retrieve)
+                   (lambda (_url callback _args _silent _cookies)
+                     (with-current-buffer response
+                       (insert "HTTP/1.1 200 OK\r\n\r\n")
+                       (setq-local url-http-response-status 200
+                                   url-http-end-of-headers (point-marker))
+                       (insert "{}")
+                       (funcall callback nil))
+                     response))
+                  ((symbol-function 'run-at-time)
+                   (lambda (&rest _) (cl-incf timers))))
+          (setq request (guixvis--request "search" (lambda (_) (error "Render failed"))
+                                          (lambda (_text) (cl-incf failures))))
+          (should (= failures 1))
+          (should (= timers 0))
+          (should (guixvis--request-state-done request))
+          (should-not (buffer-live-p response)))
+      (when (buffer-live-p response) (kill-buffer response)))))
+
+(ert-deftest guixvis-error-and-search-text-strip-controls ()
+  (with-temp-buffer
+    (guixvis-search-mode)
+    (guixvis--render-search
+     '((items . (((name . "same") (version . "1\n2") (synopsis . "hello\e[31m")
+                  (deps . 2) (dependents . 1))))))
+    (should-not (string-match-p "\e" (buffer-string)))
+    (guixvis--show-error "Unavailable\n\e[31m")
+    (should-not (string-match-p "[\n\e]" (format "%s" header-line-format)))))
 
 (ert-deftest guixvis-killed-buffer-discards-response ()
   (let ((buffer (generate-new-buffer " *guixvis closed*"))

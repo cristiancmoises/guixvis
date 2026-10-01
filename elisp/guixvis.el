@@ -3,7 +3,7 @@
 ;; Copyright © 2026 Cristian Cezar Moisés <cristiancmoises@users.noreply.github.com>
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
-;; Version: 0.8.0
+;; Version: 0.10.0
 ;; Package-Requires: ((emacs "27.1"))
 
 ;;; Commentary:
@@ -35,6 +35,11 @@
 (require 'url)
 (require 'url-http)
 (require 'url-parse)
+
+(autoload 'guixvis-graph "guixvis-graph"
+  "Open a native Guixvis dependency graph." t)
+(autoload 'guixvis-graph-at-point "guixvis-graph"
+  "Open a native graph for the exact package at point." t)
 
 (defvar url-http-response-status)
 (defvar url-http-end-of-headers)
@@ -82,7 +87,7 @@ Credentials, paths, queries, and fragments are not accepted."
 (defvar-local guixvis--snapshot nil)
 (defvar-local guixvis--package-data nil)
 (defvar-local guixvis--search-items nil)
-(defvar-local guixvis--request-generation 0)
+(defvar-local guixvis--request-token nil)
 (defvar-local guixvis--pending-request nil)
 
 (cl-defstruct (guixvis--request-state
@@ -91,12 +96,14 @@ Credentials, paths, queries, and fragments are not accepted."
 
 (define-error 'guixvis-stale-index "Package index changed; press s to search again")
 
-(defun guixvis--package-path (name id snapshot)
-  "Return the API path for NAME, optionally exact ID and SNAPSHOT.
+(defun guixvis--reference-path (endpoint name id snapshot)
+  "Return ENDPOINT's API path for NAME, optionally exact ID and SNAPSHOT.
 Reject partial identities; zero is a valid package ID."
+  (unless (member endpoint '("package" "graph"))
+    (user-error "Invalid package reference endpoint"))
   (unless (guixvis--valid-package-name-p name)
     (user-error "Invalid Guix package name"))
-  (let ((path (concat "package/" (url-hexify-string name)))
+  (let ((path (concat endpoint "/" (url-hexify-string name)))
         (case-fold-search nil))
     (cond
      ((and (null id) (null snapshot)) path)
@@ -105,6 +112,10 @@ Reject partial identities; zero is a valid package ID."
                 (string-match-p "\\`[0-9a-f]\\{64\\}\\'" snapshot)))
       (user-error "Invalid package reference; search again"))
      (t (format "%s?id=%d&snapshot=%s" path id snapshot)))))
+
+(defun guixvis--package-path (name id snapshot)
+  "Return the package API path for NAME, optionally exact ID and SNAPSHOT."
+  (guixvis--reference-path "package" name id snapshot))
 
 (defun guixvis--base-url ()
   "Return the validated service URL without a trailing slash."
@@ -156,8 +167,15 @@ When SINGLE-LINE is non-nil, replace newlines and tabs with spaces."
 
 (defun guixvis--cancel-pending-request ()
   "Release the request owned by the current Guixvis buffer."
-  (guixvis--dispose-request guixvis--pending-request)
-  (setq guixvis--pending-request nil))
+  (let ((request guixvis--pending-request))
+    ;; Invalidate callbacks before disposing resources that can run hooks.
+    (setq guixvis--request-token nil guixvis--pending-request nil)
+    (guixvis--dispose-request request)))
+
+(defun guixvis--setup-native-buffer ()
+  "Install request cleanup for the current native Guixvis buffer."
+  (add-hook 'change-major-mode-hook #'guixvis--cancel-pending-request nil t)
+  (add-hook 'kill-buffer-hook #'guixvis--cancel-pending-request nil t))
 
 (defun guixvis--response-data (status)
   "Read the JSON response in the current URL buffer, checking STATUS."
@@ -166,7 +184,7 @@ When SINGLE-LINE is non-nil, replace newlines and tabs with spaces."
     (signal 'guixvis-stale-index nil))
    ((and (integerp url-http-response-status)
          (= url-http-response-status 503))
-    (error "The package index is still building; wait a moment and press g"))
+    (error "Local service temporarily unavailable (building or busy); wait a moment and press g"))
    ((and (integerp url-http-response-status)
          (= url-http-response-status 404))
     (error "Package not found; press s to search again"))
@@ -200,7 +218,7 @@ Requests bypass proxies, omit cookies, and do not follow redirects."
     (unless (and (numberp guixvis-request-timeout)
                  (> guixvis-request-timeout 0))
       (user-error "Set `guixvis-request-timeout' to a positive number"))
-    (condition-case err
+    (condition-case nil
         (let ((buffer
                (url-retrieve
                 address
@@ -234,44 +252,61 @@ Requests bypass proxies, omit cookies, and do not follow redirects."
                        (funcall failure
                                 (guixvis--connection-help "The request timed out"))))))))
       (error
-       (guixvis--dispose-request request)
-       (funcall failure (guixvis--connection-help (error-message-string err)))))
+       (unless (guixvis--request-state-done request)
+         (guixvis--dispose-request request)
+         (funcall failure (guixvis--connection-help "Cannot create a connection to the local service")))))
     request))
 
 (defun guixvis--show-error (text)
   "Show TEXT in the current native buffer and the echo area."
+  (setq text (guixvis--clean-text text t)
+        guixvis--search-items nil guixvis--package-data nil)
+  (when (derived-mode-p 'guixvis-search-mode)
+    (setq tabulated-list-entries nil)
+    (tabulated-list-print))
   (when (derived-mode-p 'guixvis-package-mode)
-    (setq guixvis--package-data nil)
     (let ((inhibit-read-only t))
       (erase-buffer)
-      (insert text "\n"))
-    (when (get-text-property 0 'guixvis-stale text)
-      (setq guixvis--package-name nil guixvis--package-id nil guixvis--snapshot nil)))
+      (insert text "\n")))
+  (when (get-text-property 0 'guixvis-stale text)
+    (setq guixvis--package-name nil guixvis--package-id nil guixvis--snapshot nil))
   (setq header-line-format (propertize text 'face 'error)
         mode-line-process " [error]")
   (message "Guixvis: %s" text))
 
-(defun guixvis--fetch (path render)
-  "Fetch PATH for the current buffer and call RENDER for its latest request."
+(defun guixvis--fetch (path render &optional failure)
+  "Fetch PATH for this buffer and call RENDER only for its current request.
+Optional FAILURE receives an error string in this buffer; it defaults to
+`guixvis--show-error'.  RENDER errors are routed through FAILURE."
   (guixvis--cancel-pending-request)
-  (cl-incf guixvis--request-generation)
   (let ((target (current-buffer))
-        (generation guixvis--request-generation))
-    (setq header-line-format "Loading packages…"
+        (token (make-symbol "guixvis-request"))
+        (completed nil))
+    (setq guixvis--request-token token
+          header-line-format "Loading packages…"
           mode-line-process " [loading]")
-    (setq guixvis--pending-request
-          (guixvis--request
+    (let ((request
+           (guixvis--request
            path
            (lambda (data)
              (when (buffer-live-p target)
                (with-current-buffer target
-                 (when (= generation guixvis--request-generation)
+                 (when (eq token guixvis--request-token)
+                   (setq completed t guixvis--pending-request nil)
                    (funcall render data)))))
            (lambda (error-text)
              (when (buffer-live-p target)
                (with-current-buffer target
-                 (when (= generation guixvis--request-generation)
-                   (guixvis--show-error error-text)))))))))
+                 (when (eq token guixvis--request-token)
+                   (setq completed t guixvis--pending-request nil)
+                   (funcall (or failure #'guixvis--show-error) error-text))))))))
+      ;; A transport can complete synchronously, or a renderer can replace
+      ;; this view before the transport returns its request state.
+      (if (and (buffer-live-p target)
+               (eq token (buffer-local-value 'guixvis--request-token target))
+               (not completed))
+          (with-current-buffer target (setq guixvis--pending-request request))
+        (guixvis--dispose-request request)))))
 
 (defun guixvis--terminal (program args)
   "Run PROGRAM with ARGS, reusing the live \"*guixvis*\" terminal."
@@ -310,6 +345,7 @@ Start it first with \"guixvis web\"; see `guixvis-web-url'."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
     (define-key map (kbd "RET") #'guixvis-package-at-point)
+    (define-key map (kbd "v") #'guixvis-graph-at-point)
     (define-key map (kbd "s") #'guixvis-search)
     (define-key map (kbd "/") #'guixvis-search)
     (define-key map (kbd "w") #'guixvis-copy-command)
@@ -319,16 +355,17 @@ Start it first with \"guixvis web\"; see `guixvis-web-url'."
 
 (define-derived-mode guixvis-search-mode tabulated-list-mode "Guixvis"
   "Browse Guix packages asynchronously through the local service.
-RET shows details, s searches, g refreshes, and w copies a Guix command."
+RET shows details, v opens a graph, s searches, g refreshes, w copies a command."
   (setq tabulated-list-format
         [("Package" 26 t) ("Version" 16 t)
          ("Deps" 6 guixvis--sort-dependencies :right-align t)
          ("Used by" 8 guixvis--sort-dependents :right-align t)
+         ("Variant" 22 t)
          ("Synopsis" 0 t)])
   (setq tabulated-list-padding 2
         tabulated-list-sort-key nil)
   (setq-local revert-buffer-function #'guixvis--refresh-search)
-  (add-hook 'kill-buffer-hook #'guixvis--cancel-pending-request nil t)
+  (guixvis--setup-native-buffer)
   (tabulated-list-init-header))
 
 (defun guixvis--sort-dependencies (a b)
@@ -343,6 +380,8 @@ RET shows details, s searches, g refreshes, and w copies a Guix command."
 
 (defun guixvis--search-entry (item)
   "Validate a search ITEM and turn it into a table entry."
+  (unless (and (proper-list-p item) (cl-every #'consp item))
+    (error "Invalid package entry from the local service"))
   (let ((name (alist-get 'name item))
         (id (alist-get 'id item))
         (snapshot (alist-get 'snapshot item))
@@ -352,27 +391,65 @@ RET shows details, s searches, g refreshes, and w copies a Guix command."
                  (natnump deps) (natnump dependents))
       (error "Invalid package entry from the local service"))
     (guixvis--package-path name id snapshot)
+    (dolist (key '(catalog nameMatch))
+      (when (and (assq key item) (not (memq (alist-get key item) '(nil t))))
+        (error "Invalid package metadata from the local service")))
     (list (if id (cons snapshot id) name) (vector name
                        (guixvis--clean-text (alist-get 'version item) t)
                        (number-to-string deps)
                        (number-to-string dependents)
+                       (if id
+                           (format "ID %d · %s" id
+                                   (if (assq 'catalog item)
+                                       (if (alist-get 'catalog item) "catalog" "private")
+                                     "unknown"))
+                         "name only")
                        (guixvis--clean-text (alist-get 'synopsis item) t)))))
 
 (defun guixvis--render-search (data)
   "Display the search response DATA in the current buffer."
-  (unless (and (listp data) (assq 'items data)
-               (listp (alist-get 'items data)))
+  (unless (and (proper-list-p data) (cl-every #'consp data)
+               (assq 'items data) (proper-list-p (alist-get 'items data))
+               (<= (length (alist-get 'items data)) 500))
     (error "Invalid search response from the local service"))
-  (let ((entries (mapcar #'guixvis--search-entry (alist-get 'items data))))
+  (dolist (key '(complete capped))
+    (when (and (assq key data) (not (memq (alist-get key data) '(nil t))))
+      (error "Invalid search response metadata from the local service")))
+  (dolist (key '(generation diagnostics_count))
+    (when (and (assq key data) (not (natnump (alist-get key data))))
+      (error "Invalid search response count from the local service")))
+  (let ((entries (mapcar #'guixvis--search-entry (alist-get 'items data)))
+        (selected (tabulated-list-get-id))
+        (snapshot (alist-get 'snapshot data)))
+    (when (assq 'snapshot data)
+      (guixvis--package-path "snapshot" 0 snapshot))
+    (dolist (item (alist-get 'items data))
+      (when (alist-get 'snapshot item)
+        (if snapshot
+            (unless (equal snapshot (alist-get 'snapshot item))
+              (error "Unexpected search snapshot; press s to search again"))
+          (setq snapshot (alist-get 'snapshot item)))))
     (setq tabulated-list-entries entries
           guixvis--search-items (cl-mapcar #'cons (mapcar #'car entries)
                                          (alist-get 'items data)))
     (tabulated-list-print t)
+    (when selected
+      (goto-char (point-min))
+      (while (and (not (eobp)) (not (equal selected (tabulated-list-get-id))))
+        (forward-line 1))
+      (when (eobp) (goto-char (point-min))))
     (tabulated-list-init-header)
     (setq mode-line-process
-          (format " [%d%s packages]" (length entries)
-                  (if (alist-get 'capped data) "+" "")))
-    (message "Guixvis: %d%s packages for %S; RET details, s search, g refresh, w copy command"
+          (format " [%d%s packages%s%s%s]" (length entries)
+                  (if (alist-get 'capped data) "+" "")
+                  (if (alist-get 'capped data) "; narrow the query" "")
+                  (if (null entries) "; No matches; press s to search again" "")
+                  (if (and (assq 'complete data) (not (alist-get 'complete data)))
+                      (format "; Incomplete index: %s extraction diagnostics"
+                              (if (assq 'diagnostics_count data)
+                                  (alist-get 'diagnostics_count data) "unknown"))
+                    "")))
+    (message "Guixvis: %d%s packages for %S; RET details, v graph, s search, g refresh, w copy command"
              (length entries) (if (alist-get 'capped data) "+" "") guixvis--query)))
 
 (defun guixvis--refresh-search (&rest _ignored)
@@ -410,6 +487,7 @@ Start \"guixvis web\" first.  An empty query lists packages up to
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "s") #'guixvis-search)
     (define-key map (kbd "g") #'guixvis--refresh-package)
+    (define-key map (kbd "v") #'guixvis-graph-at-point)
     (define-key map (kbd "w") #'guixvis-copy-command)
     (define-key map (kbd "b") #'guixvis-web)
     (define-key map (kbd "TAB") #'forward-button)
@@ -419,10 +497,11 @@ Start \"guixvis web\" first.  An empty query lists packages up to
 
 (define-derived-mode guixvis-package-mode special-mode "Guixvis Package"
   "Show a Guix package and follow its dependency links.
-TAB moves between dependencies, RET follows a link, and w copies a command."
+TAB moves between dependencies, RET follows a link, v opens a graph,
+and w copies a command."
   (setq-local truncate-lines nil)
   (setq-local revert-buffer-function #'guixvis--refresh-package)
-  (add-hook 'kill-buffer-hook #'guixvis--cancel-pending-request nil t))
+  (guixvis--setup-native-buffer))
 
 (defun guixvis--insert-package-links (heading packages)
   "Insert HEADING and buttons for PACKAGES."
@@ -497,7 +576,7 @@ TAB moves between dependencies, RET follows a link, and w copies a command."
     (guixvis--insert-package-links "Same module" (alist-get 'module_neighbors data))
     (goto-char (point-min)))
   (setq header-line-format
-        "TAB / RET follow package links  ·  w copy command  s search  g refresh  q quit"
+        "TAB / RET follow package links  ·  v graph  w copy command  s search  g refresh  q quit"
         mode-line-process nil))
 
 (defun guixvis--refresh-package (&rest _ignored)

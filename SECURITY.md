@@ -52,6 +52,23 @@ HTTP and JSON libraries, validates copied commands, and keeps package actions
 under your control. Review copied commands, especially removals, before running
 them in the intended profile.
 
+Native Emacs requests omit cookies, bypass proxies and refuse redirects.
+Replacing a request, changing major mode or closing a buffer cancels its owned
+request; late callbacks cannot render into a newer view. Search and graph
+responses are validated before becoming clickable package references. Graph
+projections are bounded to 200 nodes and 3,000 edges, and navigation history
+to 32 entries. Expired snapshot references clear the old view instead of
+selecting a same-name replacement.
+Graph versions are limited to 512 characters, preventing repeated edge
+labels from amplifying a large metadata string. Local graph filters are
+limited to 200 characters.
+
+The client's 8 MiB response check happens after HTTP retrieval, before JSON
+parsing. It is not a streaming download memory limit. Emacs' JSON decoder
+maps both JSON `false` and `null` to nil; metadata validation therefore cannot
+distinguish those two values. These safeguards do not make an untrusted local
+service safe in every respect.
+
 ## Reporting a problem
 
 For a reproducible defect, include the Guixvis version, interface used, and a
