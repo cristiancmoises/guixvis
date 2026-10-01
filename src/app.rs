@@ -835,6 +835,7 @@ impl App {
             return;
         };
         let selected = self.graph.selected_id();
+        let filter = crate::relations::RelationFilter::new(&self.graph_query);
         self.graph_visible = self
             .graph
             .nodes
@@ -842,8 +843,7 @@ impl App {
             .enumerate()
             .filter_map(|(i, &id)| {
                 let p = &index.packages[id as usize];
-                crate::relations::matches_relation(&p.name, &p.version, &self.graph_query)
-                    .then_some(i)
+                filter.matches(&p.name, &p.version).then_some(i)
             })
             .collect();
         self.graph_visible.sort_unstable_by(|&a, &b| {

@@ -55,12 +55,16 @@ pub fn collect_relations(
             return Err(WalkError::Cancelled);
         }
         let next_depth = depths[id as usize] + 1;
-        let mut visit = |dep: u32, kind: DepKind| -> Result<(), WalkError> {
-            work += 1;
-            if work.is_multiple_of(256) && cancelled() {
-                return Err(WalkError::Cancelled);
+        let mut visit = |dep: u32, mask: u8| -> Result<(), WalkError> {
+            // Keep cancellation checks measured in typed relations, including
+            // reverse edges that now arrive as a merged category mask.
+            for _ in 0..mask.count_ones() {
+                work += 1;
+                if work.is_multiple_of(256) && cancelled() {
+                    return Err(WalkError::Cancelled);
+                }
             }
-            kinds[dep as usize] |= 1 << kind as u8;
+            kinds[dep as usize] |= mask;
             if depths[dep as usize] == usize::MAX {
                 depths[dep as usize] = next_depth;
                 queue.push_back(dep);
@@ -70,14 +74,12 @@ pub fn collect_relations(
         match direction {
             Direction::Dependencies => {
                 for (dep, kind) in index.packages[id as usize].typed_deps() {
-                    visit(dep, kind)?;
+                    visit(dep, 1 << kind as u8)?;
                 }
             }
             Direction::Dependents => {
-                for &dep in index.dependents[id as usize].iter() {
-                    for kind in index.packages[dep as usize].dep_kinds(id) {
-                        visit(dep, kind)?;
-                    }
+                for (dep, mask) in index.typed_dependents(id) {
+                    visit(dep, mask)?;
                 }
             }
         }
@@ -150,6 +152,9 @@ impl RelationWorker {
             .spawn(move || {
                 // At most two closures, one per direction for the current root.
                 let mut cache: HashMap<RelationKey, Arc<RelationSet>> = HashMap::new();
+                // Fold only packages actually filtered, then reuse that text
+                // across queries and closure directions for this index.
+                let mut lowered: Vec<Option<String>> = vec![None; index.len()];
                 while let Ok(mut req) = rx.recv() {
                     while let Ok(newer) = rx.try_recv() {
                         req = newer;
@@ -176,13 +181,21 @@ impl RelationWorker {
                         cache.insert(key.clone(), Arc::clone(&set));
                         set
                     };
+                    let filter = RelationFilter::new(&req.query);
                     let mut visible = Vec::new();
                     for (i, hit) in set.hits.iter().enumerate() {
                         if i.is_multiple_of(256) && cancelled() {
                             break;
                         }
-                        let p = &index.packages[hit.id as usize];
-                        if matches_relation(&p.name, &p.version, &req.query) {
+                        if filter.is_empty() {
+                            visible.push(i);
+                            continue;
+                        }
+                        let text = lowered[hit.id as usize].get_or_insert_with(|| {
+                            let p = &index.packages[hit.id as usize];
+                            relation_text(&p.name, &p.version)
+                        });
+                        if filter.matches_lowered(text) {
                             visible.push(i);
                         }
                     }
@@ -248,8 +261,35 @@ impl Drop for RelationWorker {
 }
 
 pub fn matches_relation(name: &str, version: &str, query: &str) -> bool {
-    let hay = format!("{} {}", name.to_lowercase(), version.to_lowercase());
-    query
-        .split_whitespace()
-        .all(|term| hay.contains(&term.to_lowercase()))
+    RelationFilter::new(query).matches(name, version)
+}
+
+/// Literal AND terms, Unicode-lowercased once for a filtering pass.
+pub(crate) struct RelationFilter {
+    terms: Vec<String>,
+}
+
+impl RelationFilter {
+    pub(crate) fn new(query: &str) -> Self {
+        Self {
+            terms: query.split_whitespace().map(str::to_lowercase).collect(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.terms.is_empty()
+    }
+
+    pub(crate) fn matches(&self, name: &str, version: &str) -> bool {
+        self.is_empty() || self.matches_lowered(&relation_text(name, version))
+    }
+
+    fn matches_lowered(&self, text: &str) -> bool {
+        self.terms.iter().all(|term| text.contains(term))
+    }
+}
+
+fn relation_text(name: &str, version: &str) -> String {
+    // Fold fields independently to retain Unicode context-sensitive casing.
+    format!("{} {}", name.to_lowercase(), version.to_lowercase())
 }

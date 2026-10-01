@@ -117,6 +117,8 @@ pub struct Index {
     pub names: HashMap<Arc<str>, u32>,
     /// Reverse edges: all direct dependents of each package id.
     pub dependents: Vec<Arc<[u32]>>,
+    /// Derived category masks parallel to `dependents`; excluded from the blob.
+    dependent_kinds: Vec<Arc<[u8]>>,
     /// Packages grouped by defining module file.
     pub by_module: HashMap<Arc<str>, Vec<u32>>,
     /// Channel commit this index was generated against ("" if unknown).
@@ -237,6 +239,7 @@ impl Index {
         let mut seen = vec![false; len];
         let mut names: HashMap<Arc<str>, u32> = HashMap::with_capacity(len);
         let mut dependents: Vec<Vec<u32>> = vec![Vec::new(); len];
+        let mut dependent_kinds: Vec<Vec<u8>> = vec![Vec::new(); len];
         let mut by_module: HashMap<Arc<str>, Vec<u32>> = HashMap::new();
 
         for p in &mut packages {
@@ -288,16 +291,21 @@ impl Index {
             if !p.file.is_empty() {
                 by_module.entry(Arc::clone(&p.file)).or_default().push(p.id);
             }
-            for dep in p
-                .inputs
-                .iter()
-                .chain(p.propagated.iter())
-                .chain(p.native.iter())
-            {
-                if *dep as usize >= len {
-                    return Err(IndexError::IdOutOfRange(*dep, len));
+            for (dep, kind) in p.typed_deps() {
+                if dep as usize >= len {
+                    return Err(IndexError::IdOutOfRange(dep, len));
                 }
-                dependents[*dep as usize].push(p.id);
+                let ids = &mut dependents[dep as usize];
+                let masks = &mut dependent_kinds[dep as usize];
+                // Packages are visited in ascending ID order, so duplicate
+                // categories for this source merge into the last reverse edge.
+                let mask = 1 << kind as u8;
+                if ids.last() == Some(&p.id) {
+                    *masks.last_mut().expect("reverse masks align with ids") |= mask;
+                } else {
+                    ids.push(p.id);
+                    masks.push(mask);
+                }
             }
         }
 
@@ -313,14 +321,8 @@ impl Index {
             diagnostic.message = clean_text(&diagnostic.message, false);
         }
 
-        let dependents: Vec<Arc<[u32]>> = dependents
-            .into_iter()
-            .map(|mut v| {
-                v.sort_unstable();
-                v.dedup();
-                Arc::from(v.as_slice())
-            })
-            .collect();
+        let dependents: Vec<Arc<[u32]>> = dependents.into_iter().map(Arc::from).collect();
+        let dependent_kinds = dependent_kinds.into_iter().map(Arc::from).collect();
 
         if origin.channels.len() > 4096 {
             return Err(IndexError::Limit("channels"));
@@ -348,6 +350,7 @@ impl Index {
             packages,
             names,
             dependents,
+            dependent_kinds,
             by_module,
             guix_commit: clean_text(&guix_commit, false),
             generated_ms,
@@ -380,6 +383,17 @@ impl Index {
     /// Direct dependent count of a package.
     pub fn dependents_count(&self, id: u32) -> usize {
         self.dependents[id as usize].len()
+    }
+
+    /// Direct dependents in the same sorted, unique order as `dependents[id]`.
+    /// The category mask combines input (1), propagated (2), and native (4)
+    /// relations from that dependent to `id`. Like `dependents_count`, `id`
+    /// must be valid. These derived masks are never serialized.
+    pub fn typed_dependents(&self, id: u32) -> impl Iterator<Item = (u32, u8)> + '_ {
+        self.dependents[id as usize]
+            .iter()
+            .copied()
+            .zip(self.dependent_kinds[id as usize].iter().copied())
     }
 
     /// Packages defined in the same module file as `id` (including itself).

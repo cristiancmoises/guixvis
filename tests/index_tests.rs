@@ -9,6 +9,34 @@ use guixvis::search::dependents_by_name;
 use common::load_fixture;
 
 #[test]
+fn typed_reverse_edges_merge_categories_without_changing_ids_or_blob() {
+    let doc = serde_json::from_value(serde_json::json!({
+        "header": {"schema": 4, "package_count": 4}, "packages": [
+            {"id": 3, "name": "last", "inputs": [0], "native_inputs": [0]},
+            {"id": 1, "name": "first", "inputs": [0, 0], "propagated_inputs": [0], "native_inputs": [0]},
+            {"id": 0, "name": "root", "inputs": [1]},
+            {"id": 2, "name": "middle", "propagated_inputs": [0]}
+        ]
+    })).unwrap();
+    let index = Index::from_doc(doc, 12).unwrap();
+    assert_eq!(index.dependents[0].as_ref(), &[1, 2, 3]);
+    assert_eq!(
+        index.typed_dependents(0).collect::<Vec<_>>(),
+        vec![(1, 7), (2, 2), (3, 5)]
+    );
+    assert_eq!(index.typed_dependents(1).collect::<Vec<_>>(), vec![(0, 1)]);
+    assert!(index.typed_dependents(2).next().is_none());
+    let bytes = guixvis::blob::encode(&index);
+    let decoded = guixvis::blob::decode(&bytes, 999).unwrap();
+    assert_eq!(
+        decoded.typed_dependents(0).collect::<Vec<_>>(),
+        vec![(1, 7), (2, 2), (3, 5)]
+    );
+    assert_eq!(guixvis::blob::encode(&decoded), bytes);
+    assert_eq!(decoded.snapshot_id(), index.snapshot_id());
+}
+
+#[test]
 fn exact_numeric_ids_preserve_versions_and_private_variants() {
     let doc: IndexDoc = serde_json::from_str(include_str!("fixtures/identity.json"))
         .expect("numeric identity document parses");

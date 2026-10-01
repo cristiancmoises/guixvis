@@ -7,6 +7,41 @@ use guixvis::graph::{GraphView, NODE_BUDGET};
 use common::load_fixture;
 
 #[test]
+fn reverse_projection_diamond_cycle_keeps_order_categories_and_counts() {
+    use guixvis::index::{
+        DepKind::{Input, Native, Propagated},
+        Index,
+    };
+    let doc = serde_json::from_value(serde_json::json!({
+        "header": {"schema": 4, "package_count": 4}, "packages": [
+            {"id": 0, "name": "root", "inputs": [3]},
+            {"id": 1, "name": "zeta", "inputs": [0], "propagated_inputs": [0], "native_inputs": [0]},
+            {"id": 2, "name": "alpha", "propagated_inputs": [0]},
+            {"id": 3, "name": "middle", "inputs": [1], "propagated_inputs": [1], "native_inputs": [2]}
+        ]
+    })).unwrap();
+    let index = Index::from_doc(doc, 0).unwrap();
+    let p = guixvis::graph::project(&index, 0, guixvis::graph::Dir::Dependents, 3, 200);
+    assert_eq!(p.nodes, vec![0, 2, 3, 1]);
+    assert_eq!(p.depth_of, vec![0, 1, 2, 1]);
+    assert_eq!(p.kind_of, vec![None; 4]);
+    assert_eq!(
+        p.kinds_of,
+        vec![
+            vec![Input],
+            vec![Propagated],
+            vec![Input, Propagated, Native],
+            vec![Input, Propagated, Native]
+        ]
+    );
+    assert_eq!(p.edges, vec![(0, 2), (1, 0), (2, 3), (2, 1), (3, 0)]);
+    assert_eq!(p.discovered_total, Some(4));
+    assert_eq!(p.edges_total, Some(5));
+    assert_eq!(p.truncated, 0);
+    assert_eq!(p.edges_truncated, 0);
+}
+
+#[test]
 fn projection_counts_nodes_beyond_the_drawing_budget() {
     let index = common::chain_fixture(8);
     let p = guixvis::graph::project(&index, 0, guixvis::graph::Dir::Deps, 7, 3);
@@ -153,6 +188,17 @@ fn layout_is_deterministic() {
     let mut g2 = GraphView::new(0, 2);
     g1.rebuild(&index, 0, 2);
     g2.rebuild(&index, 0, 2);
+    let baseline = [
+        (0.2700752, -0.03911543),
+        (1.5, 0.6594589),
+        (0.22130036, 0.9),
+        (1.1591325, -0.9),
+        (-1.5, -0.39978075),
+    ];
+    for (actual, expected) in g1.pos.iter().zip(baseline) {
+        assert!((actual.0 - expected.0).abs() < 1e-6);
+        assert!((actual.1 - expected.1).abs() < 1e-6);
+    }
     assert_eq!(g1.pos.len(), g2.pos.len());
     for (a, b) in g1.pos.iter().zip(g2.pos.iter()) {
         assert!((a.0 - b.0).abs() < 1e-6, "x positions must match");

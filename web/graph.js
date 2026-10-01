@@ -135,14 +135,17 @@ class GraphEngine {
     const k = 0.18; // constant spacing tuned so equilibrium fits the frame
     const temp = this.alpha;
     const unit = this.unit;
+    const rectangles = this.style === "rectangles";
+    // Geometry is constant within a tick, but refreshed for unit/style changes.
+    const positions = this.names.map((name) => this.pos.get(name));
+    const velocities = this.names.map((name) => this.vel.get(name));
+    const bounds = this.names.map((name) => this.boundsOfWorld(name));
 
     // Repulsion + collision between every pair.
     for (let i = 0; i < n; i++) {
-      const a = this.names[i];
-      const pa = this.pos.get(a);
+      const pa = positions[i], va = velocities[i], ba = bounds[i];
       for (let j = i + 1; j < n; j++) {
-        const b = this.names[j];
-        const pb = this.pos.get(b);
+        const pb = positions[j], vb = velocities[j], bb = bounds[j];
         let dx = pa.x - pb.x;
         let dy = pa.y - pb.y;
         let d2 = dx * dx + dy * dy;
@@ -156,25 +159,34 @@ class GraphEngine {
         const force = (k * k) / d;
         const fx = (force * dx) / d;
         const fy = (force * dy) / d;
-        this.push(a, fx, fy);
-        this.push(b, -fx, -fy);
+        va.x += fx;
+        va.y += fy;
+        vb.x += -fx;
+        vb.y += -fy;
 
-        if (this.style === "rectangles") {
-          const overlap = this.rectangleOverlap(a, b);
-          if (overlap) {
-            this.push(a, overlap.x / 2, overlap.y / 2);
-            this.push(b, -overlap.x / 2, -overlap.y / 2);
+        if (rectangles) {
+          // Use actual positions, including when repulsion perturbs a coincidence.
+          const rawDx = pa.x - pb.x, rawDy = pa.y - pb.y;
+          const ox = ba.halfWidth + bb.halfWidth + 8 * unit - Math.abs(rawDx);
+          const oy = ba.halfHeight + bb.halfHeight + 8 * unit - Math.abs(rawDy);
+          if (ox > 0 && oy > 0) {
+            const cx = ox < oy ? (Math.sign(rawDx) || 1) * ox / 2 : 0;
+            const cy = ox < oy ? 0 : (Math.sign(rawDy) || 1) * oy / 2;
+            va.x += cx;
+            va.y += cy;
+            vb.x += -cx;
+            vb.y += -cy;
           }
           continue;
         }
         // Collision: keep bubbles from overlapping.
-        const ra = this.radiusOfWorld(a);
-        const rb = this.radiusOfWorld(b);
-        const minD = ra + rb + 8 * unit;
+        const minD = ba.halfWidth + bb.halfWidth + 8 * unit;
         if (d < minD) {
           const push = (minD - d) / 2;
-          this.push(a, (dx / d) * push, (dy / d) * push);
-          this.push(b, (-dx / d) * push, (-dy / d) * push);
+          va.x += (dx / d) * push;
+          va.y += (dy / d) * push;
+          vb.x += (-dx / d) * push;
+          vb.y += (-dy / d) * push;
         }
       }
     }
@@ -291,14 +303,22 @@ class GraphEngine {
           const b = this.names[j];
           const pa = this.pos.get(a);
           const pb = this.pos.get(b);
+          const pinnedA = this.pinned.has(a), pinnedB = this.pinned.has(b);
+          if (pinnedA && pinnedB) continue; // This constraint cannot be satisfied by moving nodes.
+          const shareA = pinnedA ? 0 : pinnedB ? 1 : 0.5;
+          const shareB = pinnedB ? 0 : pinnedA ? 1 : 0.5;
           if (this.style === "rectangles") {
             const overlap = this.rectangleOverlap(a, b);
             if (overlap) {
               violations += 1;
-              pa.x += overlap.x / 2;
-              pa.y += overlap.y / 2;
-              pb.x -= overlap.x / 2;
-              pb.y -= overlap.y / 2;
+              if (!pinnedA) {
+                pa.x += overlap.x * shareA;
+                pa.y += overlap.y * shareA;
+              }
+              if (!pinnedB) {
+                pb.x -= overlap.x * shareB;
+                pb.y -= overlap.y * shareB;
+              }
             }
             continue;
           }
@@ -313,45 +333,51 @@ class GraphEngine {
               dy = 0.0005;
               d = Math.hypot(dx, dy);
             }
-            const push = (minD - d) / 2;
-            pa.x += (dx / d) * push;
-            pa.y += (dy / d) * push;
-            pb.x -= (dx / d) * push;
-            pb.y -= (dy / d) * push;
+            const push = minD - d;
+            if (!pinnedA) {
+              pa.x += (dx / d) * push * shareA;
+              pa.y += (dy / d) * push * shareA;
+            }
+            if (!pinnedB) {
+              pb.x -= (dx / d) * push * shareB;
+              pb.y -= (dy / d) * push * shareB;
+            }
           }
         }
       }
       total += violations;
       if (violations === 0) break;
     }
-    if (this.style === "rectangles") {
-      // A finite relaxation budget can leave dense clusters intersecting.
-      // Sweep in vertical order to enforce spacing without shrinking any box.
-      const ordered = this.names.map((name) => ({
-        p: this.pos.get(name), box: this.boundsOfWorld(name),
-      })).sort((a, b) => a.p.y - b.p.y);
-      for (let i = 0; i < ordered.length; i++) {
-        const a = ordered[i];
-        for (let j = 0; j < i; j++) {
-          const b = ordered[j];
-          if (Math.abs(a.p.x - b.p.x) < a.box.halfWidth + b.box.halfWidth + 8 * this.unit) {
-            a.p.y = Math.max(a.p.y, b.p.y + a.box.halfHeight + b.box.halfHeight + 8 * this.unit);
-          }
+    // A finite relaxation budget can leave dense clusters intersecting.
+    // Place movable nodes against pins and previously resolved nodes in y order.
+    // Moving upward past each overlapping interval cannot revisit an earlier one.
+    const ordered = this.names.map((name) => ({
+      p: this.pos.get(name), box: this.boundsOfWorld(name), pinned: this.pinned.has(name),
+    })).sort((a, b) => a.p.y - b.p.y);
+    const placed = ordered.filter((a) => a.pinned);
+    for (const a of ordered) {
+      if (a.pinned) continue;
+      for (const b of placed) {
+        const dx = Math.abs(a.p.x - b.p.x);
+        let gap;
+        if (this.style === "rectangles") {
+          if (dx >= a.box.halfWidth + b.box.halfWidth + 8 * this.unit) continue;
+          gap = a.box.halfHeight + b.box.halfHeight + 8 * this.unit;
+        } else {
+          const minD = a.box.halfWidth + b.box.halfWidth + 0.015;
+          if (dx >= minD) continue;
+          gap = Math.sqrt(minD * minD - dx * dx);
+        }
+        if (Math.abs(a.p.y - b.p.y) < gap) {
+          a.p.y = b.p.y + gap + 1e-10;
+          total += 1;
         }
       }
+      placed.push(a);
+      placed.sort((a, b) => a.p.y - b.p.y);
     }
-    // Shrink back into the frame uniformly (no corner pileups).
-    let maxAbs = 0;
-    for (const p of this.pos.values()) {
-      maxAbs = Math.max(maxAbs, Math.abs(p.x), Math.abs(p.y));
-    }
-    if (this.style !== "rectangles" && maxAbs > 1.6) {
-      const s = 1.6 / maxAbs;
-      for (const p of this.pos.values()) {
-        p.x *= s;
-        p.y *= s;
-      }
-    }
+    // Keep fixed-size nodes separated; fitting the extent by scaling positions
+    // alone would reintroduce overlaps and also displace pins.
     this.separated = true;
     return total;
   }
@@ -784,6 +810,8 @@ class GraphCanvas {
     const c = this.canvas;
     const pointers = new Map();
     let dragNode = null;
+    let dragEngine = null;
+    let wasPinned = false;
     let panning = false;
     let movedTotal = 0;
     let downAt = 0;
@@ -796,11 +824,16 @@ class GraphCanvas {
       return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
     };
 
+    const releaseDrag = () => {
+      if (dragNode != null && dragEngine) dragEngine.setPinned(dragNode, wasPinned);
+      dragNode = null;
+      dragEngine = null;
+    };
+
     const cancelGesture = () => {
       clearTimeout(longPressTimer);
       pointers.clear();
-      if (dragNode != null && this.engine) this.engine.setPinned(dragNode, false);
-      dragNode = null;
+      releaseDrag();
       panning = false;
     };
 
@@ -816,15 +849,16 @@ class GraphCanvas {
         dragNode = this.engine ? this.engine.pick(world.x, world.y) : null;
         panning = dragNode == null;
         if (dragNode != null) {
-          this.engine.setPinned(dragNode, true);
+          dragEngine = this.engine;
+          wasPinned = dragEngine.pinned.has(dragNode);
+          dragEngine.setPinned(dragNode, true);
           longPressTimer = setTimeout(() => {
             this.onNodeAction(dragNode, "tooltip", { x: ev.clientX, y: ev.clientY });
           }, 450);
         }
       } else if (pointers.size === 2) {
         clearTimeout(longPressTimer);
-        if (dragNode != null && this.engine) this.engine.setPinned(dragNode, false);
-        dragNode = null;
+        releaseDrag();
         const [a, b] = [...pointers.values()];
         pinchDist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
         pinchScale = this.scale;
@@ -892,9 +926,9 @@ class GraphCanvas {
       pointers.delete(ev.pointerId);
       const wasTap = ev.button === 0 && movedTotal < 8 && performance.now() - downAt < 250;
       if (dragNode != null) {
-        if (this.engine) this.engine.setPinned(dragNode, false);
-        if (wasTap) this.onPick(dragNode);
-        dragNode = null;
+        const picked = dragNode;
+        releaseDrag();
+        if (wasTap) this.onPick(picked);
         panning = false;
       } else if (panning && wasTap) {
         this.selected = null;

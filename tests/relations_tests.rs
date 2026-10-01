@@ -2,6 +2,55 @@ mod common;
 use guixvis::relations::{collect_relations, matches_relation, Direction, WalkError};
 
 #[test]
+fn reverse_diamond_cycle_preserves_order_shortest_depth_and_all_categories() {
+    use guixvis::index::{
+        DepKind::{Input, Native, Propagated},
+        Index,
+    };
+    let doc = serde_json::from_value(serde_json::json!({
+        "header": {"schema": 4, "package_count": 4}, "packages": [
+            {"id": 0, "name": "root", "inputs": [3]},
+            {"id": 1, "name": "zeta", "inputs": [0], "propagated_inputs": [0], "native_inputs": [0]},
+            {"id": 2, "name": "alpha", "propagated_inputs": [0]},
+            {"id": 3, "name": "middle", "inputs": [1], "propagated_inputs": [1], "native_inputs": [2]}
+        ]
+    })).unwrap();
+    let index = Index::from_doc(doc, 0).unwrap();
+    let set = collect_relations(&index, 0, Direction::Dependents, &|| false).unwrap();
+    assert_eq!(
+        set.hits
+            .iter()
+            .map(|h| (h.id, h.depth, h.kinds.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (2, 1, vec![Propagated]),
+            (3, 2, vec![Input, Propagated, Native]),
+            (1, 1, vec![Input, Propagated, Native])
+        ]
+    );
+    assert_eq!(set.key.snapshot, index.snapshot_id());
+}
+
+#[test]
+fn literal_unicode_relation_filters_preserve_terms_and_field_case_folding() {
+    for (name, version, query, want) in [
+        ("Éditeur", "ΒΣ", "\u{2003}ÉDI\tβς", true),
+        ("ΟΣ", "İ2", "ος i\u{307}", true),
+        ("Éditeur", "3.2", "ÉDI\n3.2", true),
+        ("Éditeur", "3.2", ".*", false),
+        ("a[b]", "1", "[b]", true),
+        ("Éditeur", "3.2", "\u{2003}\t", true),
+        ("Éditeur", "3.2", "édi 4", false),
+    ] {
+        assert_eq!(
+            matches_relation(name, version, query),
+            want,
+            "{name} {version}: {query:?}"
+        );
+    }
+}
+
+#[test]
 fn full_closures_reach_beyond_depth_255_and_two_thousand_rows() {
     let index = common::chain_fixture(2502);
     for (root, direction, last) in [

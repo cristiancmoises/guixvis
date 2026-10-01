@@ -6,12 +6,12 @@ package, see everything **related** to it, with fast fuzzy search and a
 polished, keyboard-first interface.
 
 [Português brasileiro](README.pt-BR.md) · [User guide](docs/usage.md) ·
-[Changes in 0.8.0](docs/releases/0.8.0.md) · [Security](SECURITY.md)
+[Changes in 0.9.0](docs/releases/0.9.0.md) · [Security](SECURITY.md)
 
-Version 0.8.0 keeps the same package selected across tabs, searches the full
-dependency and reverse-dependency closures, and starts the terminal graph at
-one hop. Different versions and private Guix package variants stay distinct
-throughout the terminal, browser, and Emacs client.
+Version 0.9.0 removes repeated work from reverse-dependency browsing, keeps
+dragged graph nodes in place during separation, and tightens cache and HTTP
+resource handling. Full relation searches, one-hop terminal graphs, and exact
+Guix package identities remain unchanged.
 
 ## A note from the author
 
@@ -49,11 +49,11 @@ whatever does not suit you.
 
 ## Screenshots
 
-Captured from the locally installed 0.8.0 build, using the real Guix index.
+Captured from the 0.9.0 candidate running locally, using the real Guix index.
 
-![Guixvis 0.8 terminal search with distinct Emacs versions](assets/guixvis-tui-overview-0.8.0.png)
+![Guixvis 0.9 terminal search and package details](assets/guixvis-tui-overview-0.9.0.png)
 
-![Guixvis 0.8 one-hop terminal graph beside its package list](assets/guixvis-tui-graph-0.8.0.png)
+![Guixvis 0.9 one-hop terminal graph beside its package list](assets/guixvis-tui-graph-0.9.0.png)
 
 ## Web UI
 
@@ -83,11 +83,11 @@ Hover a node or select it with the keyboard to inspect it. Drag with the
 primary mouse button to move a node, drag the background to pan, scroll to
 zoom, or pinch to zoom on touch screens. These gestures do not follow a package.
 
-![Guixvis 0.8 web graph with bubbles](assets/guixvis-web-bubbles-0.8.0.png)
+![Guixvis 0.9 web graph with bubbles](assets/guixvis-web-bubbles-0.9.0.png)
 
-![Guixvis 0.8 web rectangles at 100% browser zoom](assets/guixvis-web-rectangles-0.8.0.png)
+![Guixvis 0.9 web rectangles at 100% browser zoom](assets/guixvis-web-rectangles-0.9.0.png)
 
-![Guixvis 0.8 Python dependencies on a narrow screen](assets/guixvis-web-mobile-0.8.0.png)
+![Guixvis 0.9 Python dependencies on a narrow screen](assets/guixvis-web-mobile-0.9.0.png)
 
 ## Themes
 
@@ -150,19 +150,19 @@ Source releases are available as `guixvis-<version>.zupt`, a
 [zupt](https://git.securityops.com.br/cristiancmoises/zupt) archive written with
 the maximum compression level and **no password**, so anyone can open it.
 Once published, download the archive and `SHA256SUMS` from the
-[0.8.0 release](https://codeberg.org/berkeley/guixvis/releases/tag/v0.8.0), then:
+[0.9.0 release](https://codeberg.org/berkeley/guixvis/releases/tag/v0.9.0), then:
 
 ```sh
 sha256sum -c SHA256SUMS
-zupt test    guixvis-0.8.0.zupt    # verify archive integrity
-zupt list    guixvis-0.8.0.zupt    # inspect paths before extracting
-zupt extract guixvis-0.8.0.zupt    # creates ./guixvis-0.8.0/
+zupt test    guixvis-0.9.0.zupt    # verify archive integrity
+zupt list    guixvis-0.9.0.zupt    # inspect paths before extracting
+zupt extract guixvis-0.9.0.zupt    # creates ./guixvis-0.9.0/
 ```
 
 Then build it the normal way:
 
 ```sh
-cd guixvis-0.8.0
+cd guixvis-0.9.0
 cargo build --locked --release --features web
 ```
 
@@ -302,15 +302,21 @@ Run `cargo run --release --example bench` to measure cache loading, search,
 and graph layout on your machine. `node examples/bench-web.cjs` measures the
 browser's graph layout code separately.
 
-On this machine, a release build over 41,746 objects from eight channels
-measured 8.73 s for extraction and 109 ms to decode the 18.6 MB snapshot.
-Eight search queries averaged 2.63 ms (best of 20 runs per query, 500-hit cap).
-The sampled 200-node layouts took about 13–15 ms for 300 iterations.
+On this machine, alternating 0.8.0 and 0.9.0 release builds over the same
+40,926-object snapshot gave a median of 0.63 → 0.46 ms for the 200-node `zlib`
+reverse projection. Snapshot decode was essentially unchanged: 115 → 116 ms.
+These medians use five samples after a warmup; derived reverse categories cost
+some resident memory in exchange for avoiding repeated input scans.
 
-These are local measurements, not latency guarantees or a like-for-like
-speedup claim against older indexes. Version 0.8 retains more objects and exact
-identities. Relation traversal and terminal graph layout run outside drawing,
-so changing a filter does not recompute a layout in the render loop.
+The JavaScript benchmark, alternating both versions with seven samples after
+a warmup, measured 34.50 → 27.03 ms for 20 ticks over 128 nodes. This measures
+layout ticks, not browser paint or end-to-end response time. Correct final
+separation is more expensive on dense graphs because it now preserves pins
+and resolves overlaps the old bubble adjustment could leave behind.
+
+These are local measurements, not latency guarantees. Relation traversal and
+terminal graph layout run outside drawing, so changing a filter does not
+recompute a layout in the render loop.
 
 ## Security
 
@@ -326,13 +332,13 @@ deliberately boring about reachability:
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Resource-Policy` and `Cache-Control: no-store` on the API;
 - validates package names from the URL, caps search queries at 200 characters,
-  depth at 1–8 and graphs at 200 nodes including the root, with a bounded
-  concurrency of four;
+  depth at 1–8 and graphs at 200 nodes including the root, with at most four
+  expensive requests running; excess work returns HTTP 503 instead of queuing;
 - writes the embedded Guile script into a private `0700` directory as a `0600`
   file (the system temp directory is world-writable), and refuses absurdly large
-  cache files before reading them;
-- caps request bodies at 8 KB: a read-only GET API has no business receiving
-  one.
+  cache files before reading them, rejecting symlinks and non-regular snapshot
+  files on Unix;
+- rejects non-empty request bodies: this read-only API does not use them.
 
 The API has no login and is intended for local use. Package commands are shown
 as text and copied only when requested; the server never installs or removes

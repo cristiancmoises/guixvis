@@ -80,6 +80,16 @@ pinch zooms on a touch screen. Those gestures do not follow a node. On touch,
 a brief tap follows one; a long press shows its details. The visible Back
 button remains available without a mouse.
 
+Dragging pins a node only for the gesture. Separation and resizing keep that
+node's position, and releasing it restores its previous pin state. Bubble
+separation no longer rescales the solved positions in a way that recreates
+overlaps. Graph limits still apply; a dense graph may need zooming or a smaller
+depth to inspect comfortably.
+
+The local HTTP API accepts bodyless requests. If four expensive requests are
+already running, another search, detail or graph request returns HTTP 503.
+Wait for the current work to finish and retry. Health checks remain available.
+
 ## Use the package
 
 The browser detail pane has previews and copy buttons for four commands:

@@ -185,7 +185,8 @@ fn draw_canvas(f: &mut Frame, app: &App, th: &Theme, area: Rect) {
         return;
     };
     let selected = app.graph.selected;
-    let neighbors = neighbors_of(&app.graph.edges, selected);
+    let neighbors = neighbors_of(&app.graph.edges, selected, app.graph.nodes.len());
+    let focus = neighbors.iter().any(|&neighbor| neighbor);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(th.border)
@@ -219,7 +220,7 @@ fn draw_canvas(f: &mut Frame, app: &App, th: &Theme, area: Rect) {
             }
             for (i, &id) in app.graph.nodes.iter().enumerate() {
                 let (x, y) = app.graph.pos[i];
-                let color = node_color(app, th, i, selected, &neighbors, !neighbors.is_empty());
+                let color = node_color(app, th, i, selected, &neighbors, focus);
                 let radius = if i == selected {
                     0.035
                 } else if id == app.graph.root {
@@ -332,7 +333,7 @@ fn node_color(
     th: &Theme,
     i: usize,
     selected: usize,
-    neighbors: &[u16],
+    neighbors: &[bool],
     focus: bool,
 ) -> Color {
     let depth = app.graph.depth_of.get(i).copied().unwrap_or(1);
@@ -350,7 +351,7 @@ fn node_color(
     if focus {
         if i == selected {
             color = th.graph_focus;
-        } else if neighbors.contains(&(i as u16)) {
+        } else if neighbors[i] {
             color = theme::mix(color, th.accent, 0.4);
         } else {
             color = theme::mix(color, th.bg, 0.55);
@@ -361,20 +362,32 @@ fn node_color(
     color
 }
 
-fn neighbors_of(edges: &[(u16, u16)], node: usize) -> Vec<u16> {
-    edges
-        .iter()
-        .filter_map(|(a, b)| match (*a as usize == node, *b as usize == node) {
-            (true, false) => Some(*b),
-            (false, true) => Some(*a),
-            _ => None,
-        })
-        .collect()
+fn neighbors_of(edges: &[(u16, u16)], node: usize, node_count: usize) -> Vec<bool> {
+    let mut neighbors = vec![false; node_count];
+    for &(a, b) in edges {
+        match (a as usize == node, b as usize == node) {
+            (true, false) => neighbors[b as usize] = true,
+            (false, true) => neighbors[a as usize] = true,
+            _ => {}
+        }
+    }
+    neighbors
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selected_neighbors_include_both_directions_and_ignore_self_edges() {
+        let neighbors = neighbors_of(&[(0, 1), (1, 0), (2, 0), (0, 0), (3, 2)], 0, 4);
+        assert!(neighbors[1]);
+        assert!(neighbors[2]);
+        assert!(!neighbors[0]);
+        assert!(!neighbors[3]);
+        assert!(!neighbors_of(&[(0, 0), (3, 2)], 0, 4)
+            .iter()
+            .any(|&neighbor| neighbor));
+    }
     #[test]
     fn label_boxes_do_not_overlap_or_escape_terminal_cells() {
         let area = Rect::new(3, 5, 40, 8);

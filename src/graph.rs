@@ -114,36 +114,25 @@ pub fn project_cancellable(
         if d >= depth {
             continue;
         }
-        let neighbors: Box<dyn Iterator<Item = (u32, Option<DepKind>)> + '_> = match dir {
+        let neighbors: Box<dyn Iterator<Item = (u32, Option<DepKind>, u8)> + '_> = match dir {
             Dir::Deps => Box::new(
                 index.packages[id as usize]
                     .typed_deps()
-                    .map(|(id, k)| (id, Some(k))),
+                    .map(|(id, k)| (id, Some(k), 1 << k as u8)),
             ),
             Dir::Dependents => Box::new(
-                index.dependents[id as usize]
-                    .iter()
-                    .copied()
-                    .map(|id| (id, None)),
+                index
+                    .typed_dependents(id)
+                    .map(|(id, mask)| (id, None, mask)),
             ),
         };
-        for (dep, kind) in neighbors {
+        for (dep, kind, mask) in neighbors {
             if work >= DISCOVERY_WORK_BUDGET {
                 complete = false;
                 break 'discovery;
             }
             work += 1;
-            let categories = match dir {
-                Dir::Deps => kind.into_iter().collect::<Vec<_>>(),
-                Dir::Dependents => index.packages[dep as usize].dep_kinds(id),
-            };
-            for category in categories {
-                kinds[dep as usize] |= match category {
-                    DepKind::Input => 1,
-                    DepKind::Propagated => 2,
-                    DepKind::Native => 4,
-                };
-            }
+            kinds[dep as usize] |= mask;
             if work.is_multiple_of(256) && cancelled() {
                 return Err(WalkError::Cancelled);
             }
@@ -370,13 +359,14 @@ impl GraphView {
         // 200-node cap (12.4 ms vs 9.9 ms for emacs at depth 2), so the simple
         // version stayed. Run `cargo run --release --example bench` before
         // reaching for a fancier layout.
+        let mut disp = vec![(0.0f32, 0.0f32); n];
         for iter in 0..iterations {
             if cancelled() {
                 return Err(crate::relations::WalkError::Cancelled);
             }
             let temp = 1.0 - (iter as f32 / iterations as f32);
             let temp = temp * temp * 1.2 + 0.02;
-            let mut disp = vec![(0.0f32, 0.0f32); n];
+            disp.fill((0.0, 0.0));
 
             // Repulsion between every pair.
             for i in 0..n {

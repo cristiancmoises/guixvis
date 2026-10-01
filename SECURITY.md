@@ -14,14 +14,20 @@ headers, including the content security policy, apply to rejected responses
 as well as successful ones.
 
 Search length, result count, graph depth, graph size, request bodies, and
-expensive concurrent requests are bounded. Package metadata is rendered as
+expensive concurrent requests are bounded. Non-empty request bodies are
+rejected, including chunked bodies, and body inspection has a deadline.
+When all four expensive-work slots are busy, the API returns HTTP 503 rather
+than retaining a queue of requests and snapshots. Package metadata is rendered as
 text. Homepage launchers allow HTTP(S) links. Command-copy helpers validate
 package names and quote arguments; they do not interpolate metadata into a
 shell that Guixvis executes.
 
 Cache writes use a newly created private temporary file and an atomic rename.
 Existing temporary-file paths are never opened with truncation. Snapshot reads
-have a size limit; malformed snapshots are rejected. The `guix describe`
+have a size limit; malformed snapshots are rejected. On Unix, snapshot opening
+rejects symlinks, FIFOs, directories, and other non-regular files without
+blocking on a FIFO. Validation applies to the opened file descriptor.
+The `guix describe`
 and indexing subprocesses have deadlines, bounded output, cancellation, and
 owned process-group cleanup. Package and origin text is sanitized before
 terminal rendering. Guile indexing runs the user's locally installed Guix,

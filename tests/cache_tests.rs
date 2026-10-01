@@ -315,3 +315,114 @@ fn concurrent_saves_use_independent_temporary_files() {
     );
     fs::remove_dir_all(dir).ok();
 }
+
+#[cfg(unix)]
+#[test]
+fn fifo_load_child() {
+    let Some(dir) = std::env::var_os("GUIXVIS_TEST_FIFO_CACHE") else {
+        return;
+    };
+    assert!(matches!(
+        Cache::at(PathBuf::from(dir)).load(None, 0),
+        Err(guixvis::error::CacheError::Read(_))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_snapshot_is_rejected_without_waiting_for_a_writer() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let dir = temp_dir("fifo-load");
+    let cache = Cache::at(dir.clone());
+    nix::unistd::mkfifo(&cache.path(), nix::sys::stat::Mode::S_IRUSR).unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "fifo_load_child", "--nocapture"])
+        .env("GUIXVIS_TEST_FIFO_CACHE", &dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let timed_out = loop {
+        if child.try_wait().unwrap().is_some() {
+            break false;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            break true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let output = child.wait_with_output().unwrap();
+    fs::remove_dir_all(dir).unwrap();
+    assert!(
+        !timed_out,
+        "Cache::load blocked opening a FIFO without a writer"
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn snapshot_symlinks_are_rejected_even_when_valid_or_dangling() {
+    use std::os::unix::fs::symlink;
+
+    let dir = temp_dir("load-symlink");
+    let cache = Cache::at(dir.clone());
+    let target = dir.join("target.bin");
+    fs::write(&target, blob::encode(&fixture_index())).unwrap();
+    symlink(&target, cache.path()).unwrap();
+    assert!(matches!(
+        cache.load(None, 0),
+        Err(guixvis::error::CacheError::Read(_))
+    ));
+    fs::remove_file(&target).unwrap();
+    assert!(matches!(
+        cache.load(None, 0),
+        Err(guixvis::error::CacheError::Read(_))
+    ));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn snapshot_directory_is_rejected_as_a_nonregular_file() {
+    let dir = temp_dir("load-directory");
+    let cache = Cache::at(dir.clone());
+    fs::create_dir(cache.path()).unwrap();
+    assert!(matches!(
+        cache.load(None, 0),
+        Err(guixvis::error::CacheError::Read(_))
+    ));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn ordinary_v5_snapshot_still_loads_and_oversized_file_is_rejected() {
+    let dir = temp_dir("load-v5");
+    let cache = Cache::at(dir.clone());
+    let bytes = blob::encode(&fixture_index());
+    fs::write(cache.path(), &bytes).unwrap();
+    let CacheStatus::Fresh(index) = cache.load(Some(&fixture_origin()), 19).unwrap() else {
+        panic!("ordinary v5 snapshot should be fresh");
+    };
+    assert_eq!(index.built_ms, 19);
+    assert_eq!(index.packages.len(), 10);
+    assert_eq!(blob::encode(&index), bytes);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(cache.path())
+        .unwrap()
+        .set_len(512 * 1024 * 1024 + 1)
+        .unwrap();
+    assert!(matches!(
+        cache.load(None, 0),
+        Err(guixvis::error::CacheError::Read(_))
+    ));
+    fs::remove_dir_all(dir).unwrap();
+}

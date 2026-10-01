@@ -1,4 +1,7 @@
 /target
+.serena/
+.superpowers/
+AGENTS.md
 PROMPT.md
 /tasks/
 /docs/*prompt*.md

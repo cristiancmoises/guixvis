@@ -7,12 +7,12 @@ pacvis do Arch: pesquise **qualquer** pacote, veja tudo que está
 100% pelo teclado.
 
 [English](README.md) · [Guia de uso](docs/usage.md) ·
-[Mudanças na versão 0.8.0](docs/releases/0.8.0.md) · [Segurança](SECURITY.md)
+[Mudanças na versão 0.9.0](docs/releases/0.9.0.md) · [Segurança](SECURITY.md)
 
-A versão 0.8.0 mantém o pacote selecionado ao trocar de aba, pesquisa todas as
-dependências e dependências reversas alcançáveis e abre o grafo do terminal
-com um único nível. Versões diferentes e variantes privadas do Guix continuam
-distintas no terminal, no navegador e no Emacs.
+A versão 0.9.0 elimina trabalho repetido na busca de dependências reversas,
+mantém os nós arrastados no lugar durante a separação do grafo e reforça o
+tratamento de cache e requisições HTTP. A busca completa de relações, o grafo
+inicial de um nível e as identidades exatas dos pacotes continuam preservados.
 
 ## Uma nota do autor
 
@@ -40,11 +40,11 @@ mudar o que não te agradar.
 
 ## Capturas de tela
 
-Capturas da versão 0.8.0 instalada localmente, usando o índice real do Guix.
+Capturas da candidata 0.9.0 rodando localmente, usando o índice real do Guix.
 
-![Guixvis 0.8: busca no terminal com versões distintas do Emacs](assets/guixvis-tui-overview-0.8.0.png)
+![Guixvis 0.9: busca no terminal e detalhes do pacote](assets/guixvis-tui-overview-0.9.0.png)
 
-![Guixvis 0.8: grafo de um nível ao lado da lista de pacotes](assets/guixvis-tui-graph-0.8.0.png)
+![Guixvis 0.9: grafo de um nível ao lado da lista de pacotes](assets/guixvis-tui-graph-0.9.0.png)
 
 ## Interface web
 
@@ -74,11 +74,11 @@ inspecioná-lo. Arraste com o botão principal para mover um nó, arraste o fund
 para deslocar o grafo, use a roda para ampliar ou faça pinça na tela sensível
 ao toque. Esses gestos não abrem outro pacote.
 
-![Guixvis 0.8: grafo web com bolhas](assets/guixvis-web-bubbles-0.8.0.png)
+![Guixvis 0.9: grafo web com bolhas](assets/guixvis-web-bubbles-0.9.0.png)
 
-![Guixvis 0.8: retângulos com zoom do navegador em 100%](assets/guixvis-web-rectangles-0.8.0.png)
+![Guixvis 0.9: retângulos com zoom do navegador em 100%](assets/guixvis-web-rectangles-0.9.0.png)
 
-![Guixvis 0.8: dependências do Python em tela estreita](assets/guixvis-web-mobile-0.8.0.png)
+![Guixvis 0.9: dependências do Python em tela estreita](assets/guixvis-web-mobile-0.9.0.png)
 
 ## Temas
 
@@ -140,19 +140,19 @@ Os fontes publicados em cada forja saem como `guixvis-<versão>.zupt`, um arquiv
 [zupt](https://git.securityops.com.br/cristiancmoises/zupt) gerado no nível
 máximo de compressão e **sem senha**, então qualquer pessoa consegue abrir.
 Depois da publicação, baixe o arquivo e `SHA256SUMS` na
-[release 0.8.0](https://codeberg.org/berkeley/guixvis/releases/tag/v0.8.0):
+[release 0.9.0](https://codeberg.org/berkeley/guixvis/releases/tag/v0.9.0):
 
 ```sh
 sha256sum -c SHA256SUMS
-zupt test    guixvis-0.8.0.zupt    # verifica a integridade do arquivo
-zupt list    guixvis-0.8.0.zupt    # confira os caminhos antes de extrair
-zupt extract guixvis-0.8.0.zupt    # cria ./guixvis-0.8.0/
+zupt test    guixvis-0.9.0.zupt    # verifica a integridade do arquivo
+zupt list    guixvis-0.9.0.zupt    # confira os caminhos antes de extrair
+zupt extract guixvis-0.9.0.zupt    # cria ./guixvis-0.9.0/
 ```
 
 Depois é compilar normalmente:
 
 ```sh
-cd guixvis-0.8.0
+cd guixvis-0.9.0
 cargo build --locked --release --features web
 ```
 
@@ -292,15 +292,21 @@ use Dependencies ou Reverse deps. Na web, a profundidade inicial continua 2.
 Use `cargo run --release --example bench` para medir cache, busca e layout
 na sua máquina. `node examples/bench-web.cjs` mede o layout do navegador.
 
-Nesta máquina, com build release e 41.746 objetos de oito canais, a extração
-levou 8,73 s e a leitura do snapshot de 18,6 MB levou 109 ms. Oito buscas tiveram
-média de 2,63 ms (melhor de 20 execuções por consulta, limite de 500 resultados).
-Os layouts amostrados de 200 nós levaram cerca de 13–15 ms, com 300 iterações.
+Nesta máquina, alternando builds release 0.8.0 e 0.9.0 sobre o mesmo snapshot
+de 40.926 objetos, a mediana da projeção reversa de `zlib` com 200 nós caiu de
+0,63 para 0,46 ms. A leitura do snapshot ficou praticamente igual: 115 para
+116 ms. Foram cinco amostras após aquecimento. As categorias reversas usam
+um pouco mais de memória para evitar varrer os mesmos inputs repetidamente.
 
-São medições locais, não garantias de latência nem uma comparação direta de
-ganho com índices antigos. A versão 0.8 preserva mais objetos e identidades
-exatas. A travessia de relações e o layout do terminal rodam fora da renderização;
-filtrar não recalcula o layout a cada quadro.
+No teste JavaScript, com sete amostras alternadas após aquecimento, 20 ticks
+de layout sobre 128 nós caíram de 34,50 para 27,03 ms. Isso não mede pintura
+do navegador nem latência total. A separação final custa mais em grafos densos,
+pois agora preserva os nós fixados e resolve sobreposições que o ajuste antigo
+das bolhas podia deixar para trás.
+
+São medições locais, não garantias de latência. A travessia de relações e o
+layout do terminal rodam fora da renderização; filtrar não recalcula o layout
+a cada quadro.
 
 ## Segurança
 
@@ -317,12 +323,13 @@ web é deliberadamente chata quanto a alcance:
   `Cross-Origin-Resource-Policy` e `Cache-Control: no-store` na API;
 - valida os nomes de pacote vindos da URL, limita a busca a 200 caracteres, a
   profundidade a 1–8 e o grafo a 200 nós incluindo a raiz, com
-  concorrência máxima de quatro;
+  concorrência máxima de quatro; requisições excedentes recebem HTTP 503 em
+  vez de ficar numa fila sem limite;
 - grava o script Guile embutido num diretório privado `0700` como arquivo `0600`
   (o diretório temporário do sistema é gravável por todos) e recusa arquivos de
-  cache absurdamente grandes antes de lê-los;
-- limita o corpo das requisições a 8 KB: uma API somente leitura não tem o que
-  fazer com um corpo.
+  cache absurdamente grandes antes de lê-los; no Unix, rejeita links simbólicos
+  e snapshots que não sejam arquivos comuns;
+- rejeita corpos de requisição não vazios: esta API somente leitura não os usa.
 
 A API não tem login e foi feita para uso local. Os comandos aparecem como
 texto para você revisar e copiar; o servidor não instala nem remove pacotes.

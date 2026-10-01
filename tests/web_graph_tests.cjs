@@ -67,6 +67,141 @@ function interactiveCanvas(options = {}) {
   return { view, emit, calls };
 }
 
+function assertNoOverlap(layout) {
+  for (let i = 0; i < layout.names.length; i++) for (let j = i + 1; j < layout.names.length; j++) {
+    const a = layout.names[i], b = layout.names[j];
+    if (layout.pinned.has(a) && layout.pinned.has(b)) continue;
+    const pa = layout.pos.get(a), pb = layout.pos.get(b);
+    const ba = layout.boundsOfWorld(a), bb = layout.boundsOfWorld(b);
+    const separated = layout.style === "rectangles"
+      ? Math.abs(pa.x - pb.x) + 1e-10 >= ba.halfWidth + bb.halfWidth ||
+        Math.abs(pa.y - pb.y) + 1e-10 >= ba.halfHeight + bb.halfHeight
+      : Math.hypot(pa.x - pb.x, pa.y - pb.y) + 1e-10 >= ba.halfWidth + bb.halfWidth;
+    assert.ok(separated, `${a} overlaps ${b}`);
+  }
+}
+
+for (const style of ["bubbles", "rectangles"]) {
+  test(`${style} mixed-size fallback clears staggered fixed obstacles`, () => {
+    const layout = new GraphEngine([
+      { id: 0, name: "pin-a", degree: 0 },
+      { id: 1, name: "pin-b", degree: 0 },
+      { id: 2, name: "small", degree: 0 },
+      { id: 3, name: "large", degree: 100000 },
+    ], []);
+    layout.style = style;
+    layout.unit = 0.1;
+    const initial = [[0, 0], [0.6, 0.8], [0, 0], [1.5, 0.2]];
+    // Bubble radii: degree 0 gives 5 px; the large degree saturates at 22 px.
+    // Rectangle half extents below are derived directly from the literal boxes.
+    const halfExtents = style === "bubbles"
+      ? [[0.5, 0.5], [0.5, 0.5], [0.5, 0.5], [2.2, 2.2]]
+      : [[1, 0.5], [2, 1], [0.5, 0.5], [3, 1.5]];
+    layout.names.forEach((id) => {
+      layout.pos.set(id, { x: initial[id][0], y: initial[id][1] });
+      layout.boxes.set(id, { width: [20, 40, 10, 60][id], height: [10, 20, 10, 30][id] });
+    });
+    layout.pinRoot(0);
+    layout.pinRoot(1);
+    layout.separate(0); // Exercise the fallback alone, with no relaxation help.
+    assert.deepEqual(layout.pos.get(0), { x: 0, y: 0 });
+    assert.deepEqual(layout.pos.get(1), { x: 0.6, y: 0.8 });
+    for (let a = 0; a < 4; a++) for (let b = a + 1; b < 4; b++) {
+      if (a === 0 && b === 1) continue; // Fixed obstacles can overlap each other.
+      const pa = layout.pos.get(a), pb = layout.pos.get(b);
+      const separated = style === "bubbles"
+        ? Math.hypot(pa.x - pb.x, pa.y - pb.y) + 1e-10 >= halfExtents[a][0] + halfExtents[b][0]
+        : Math.abs(pa.x - pb.x) + 1e-10 >= halfExtents[a][0] + halfExtents[b][0] ||
+          Math.abs(pa.y - pb.y) + 1e-10 >= halfExtents[a][1] + halfExtents[b][1];
+      assert.ok(separated, `${a} overlaps ${b}`);
+    }
+  });
+
+  test(`${style} separation does not write even signed-zero pinned coordinates`, () => {
+    const layout = engine();
+    layout.style = style;
+    layout.pos.set("emacs", { x: -0, y: -0 });
+    layout.pos.set("glibc", { x: 0, y: 0 });
+    layout.pinRoot("emacs");
+    layout.separate(2);
+    assert.deepEqual(layout.pos.get("emacs"), { x: -0, y: -0 });
+  });
+
+  for (const pinned of [0, 1]) {
+    test(`${style} separation keeps pinned node ${pinned} fixed and moves its neighbor`, () => {
+      const layout = new GraphEngine([0, 1].map((id) => ({ id, name: "same", degree: 1 })), []);
+      layout.style = style;
+      for (const id of layout.names) {
+        layout.pos.set(id, { x: 0, y: 0 });
+        layout.boxes.set(id, { width: 100, height: 30 });
+      }
+      layout.setPinned(pinned, true);
+      layout.separate(2);
+      assert.deepEqual(layout.pos.get(pinned), { x: 0, y: 0 });
+      assertNoOverlap(layout);
+    });
+  }
+
+  test(`${style} separation leaves unsatisfiable pinned pairs fixed`, () => {
+    const layout = engine();
+    layout.style = style;
+    for (const name of layout.names) {
+      layout.pos.set(name, { x: 10, y: 0 });
+      layout.setPinned(name, true);
+    }
+    layout.separate(2);
+    for (const name of layout.names) assert.deepEqual(layout.pos.get(name), { x: 10, y: 0 });
+  });
+
+  test(`${style} three-node outlier does not shrink fixed-size nodes into overlap`, () => {
+    const layout = engine();
+    layout.style = style;
+    layout.names.forEach((name, i) => layout.pos.set(name, { x: [0, 0.2, 10][i], y: 0 }));
+    layout.separate();
+    assertNoOverlap(layout);
+    assert.deepEqual(layout.pos.get("bash"), { x: 10, y: 0 });
+  });
+
+  test(`${style} dense 200-node separation preserves pins with a short budget`, () => {
+    const layout = new GraphEngine(Array.from({ length: 200 }, (_, id) => ({ id, name: `package-${id}`, degree: 1 })), []);
+    layout.style = style;
+    for (const id of layout.names) {
+      layout.pos.set(id, { x: 0, y: 0 });
+      layout.boxes.set(id, { width: 150, height: 30 });
+    }
+    layout.setPinned(0, true);
+    layout.setPinned(199, true);
+    layout.separate(2);
+    assert.deepEqual(layout.pos.get(0), { x: 0, y: 0 });
+    assert.deepEqual(layout.pos.get(199), { x: 0, y: 0 });
+    assertNoOverlap(layout);
+    assert.ok([...layout.pos.values()].every((p) => Number.isFinite(p.x) && Number.isFinite(p.y)));
+  });
+}
+
+for (const ending of ["tap", "drag", "cancel", "pinch", "chord", "non-primary release"]) {
+  test(`gesture ${ending} restores the node's pre-existing pin state`, () => {
+    for (const pinned of [false, true]) {
+      const { view, emit } = interactiveCanvas();
+      const layout = new GraphEngine([{ id: 0, name: "root", degree: 1 }], []);
+      view.setGraph(layout);
+      layout.pos.set(0, { x: 0, y: 0 });
+      layout.setPinned(0, pinned);
+      emit("pointerdown");
+      if (ending === "drag") emit("pointermove", { clientX: 340 });
+      if (ending === "cancel") emit("pointercancel");
+      if (ending === "chord") emit("pointermove", { button: 0, buttons: 2 });
+      if (ending === "pinch") {
+        emit("pointerdown", { pointerId: 2, pointerType: "touch", clientX: 350 });
+        assert.equal(layout.pinned.has(0), pinned, "pinch releases only the gesture pin");
+        emit("pointerup", { pointerId: 2, pointerType: "touch", clientX: 350 });
+      }
+      emit("pointerup", { button: ending === "non-primary release" ? 2 : 0 });
+      assert.equal(layout.pinned.has(0), pinned);
+    }
+  });
+}
+
 test("only primary gestures pick or drag; context menu requests one back", () => {
   const picked = [], back = [];
   const { view, emit } = interactiveCanvas({ onPick: (name) => picked.push(name), onBack: () => back.push(true) });
@@ -317,6 +452,34 @@ test("node and radius lookups preserve values without scanning names", () => {
   layout.unit = 0.25;
   assert.equal(layout.radiusOfWorld("emacs"), radiusOf(2) * 0.25);
   assert.doesNotThrow(() => layout.tick());
+});
+
+test("pair-loop optimization preserves the deterministic force model for both shapes", () => {
+  // Captured from ad13bd9's force model: coincidence, collisions, springs,
+  // cross-edges, soft walls, gravity, and a pinned node all contribute.
+  const expected = {
+    bubbles: [[0, 0], [0.3299894533001634, 0.6210044746322395],
+      [0.7233582978665107, -0.5493230289911479], [1.3349753676994631, -1.284082599582378]],
+    rectangles: [[0, 0], [0.17606920596380043, 0.6647271695190036],
+      [0.7340803901173334, -0.5263923707359801], [1.3650170672574462, -1.257463117121554]],
+  };
+  for (const style of ["bubbles", "rectangles"]) {
+    const layout = new GraphEngine([0, 1, 2, 3].map((id) => ({ id, name: `p-${id}`, degree: id * 2 })),
+      [{ from_id: 0, to_id: 1 }, { from_id: 0, to_id: 2 }, { from_id: 2, to_id: 3 }], { fresh: true });
+    layout.style = style;
+    layout.unit = 1 / 160;
+    layout.names.forEach((id) => {
+      layout.pos.set(id, { x: [0, 0, 0.03, 2][id], y: [0, 0, 0.04, -2][id] });
+      layout.boxes.set(id, { width: 80 + id * 20, height: 30 });
+    });
+    layout.pinRoot(0);
+    for (let i = 0; i < 4; i++) layout.tick();
+    layout.names.forEach((id) => {
+      const p = layout.pos.get(id);
+      assert.ok(Math.abs(p.x - expected[style][id][0]) < 1e-12, `${style} ${id} x`);
+      assert.ok(Math.abs(p.y - expected[style][id][1]) < 1e-12, `${style} ${id} y`);
+    });
+  }
 });
 
 test("settled graph frames stop layout work and animation requests", () => {

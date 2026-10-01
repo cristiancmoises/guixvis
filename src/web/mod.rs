@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, RwLock};
 
-use axum::extract::{rejection::QueryRejection, ConnectInfo, DefaultBodyLimit, Path, Query, State};
+use axum::extract::{rejection::QueryRejection, ConnectInfo, Path, Query, State};
 use axum::http::header::{
     ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
     CONTENT_TYPE, HOST, ORIGIN, REFERRER_POLICY, VARY, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
@@ -189,6 +189,29 @@ impl IntoResponse for ApiError {
 // ---------------------------------------------------------------------------
 // Security middleware
 // ---------------------------------------------------------------------------
+
+/// The read-only server accepts no payload, including chunked requests that
+/// have no Content-Length. A zero-byte cap rejects the first nonempty chunk;
+/// a deadline bounds incomplete streams that never deliver that chunk.
+async fn reject_request_body(
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let (parts, body) = req.into_parts();
+    if !matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            axum::body::to_bytes(body, 0)
+        )
+        .await,
+        Ok(Ok(_))
+    ) {
+        return Err(ApiError::BadRequest("request body must be empty".into()));
+    }
+    Ok(next
+        .run(Request::from_parts(parts, axum::body::Body::empty()))
+        .await)
+}
 
 /// Reject requests whose Host header is not local and peers that are not on
 /// loopback. Together these defeat DNS-rebinding reads of the local API.
@@ -416,10 +439,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/package/{name}", get(package))
         .route("/api/v1/graph/{name}", get(graph))
         .layer(middleware::from_fn(compress_api))
+        .layer(middleware::from_fn(reject_request_body))
         .layer(middleware::from_fn(local_only))
         .layer(middleware::from_fn(security_headers))
-        // Read-only API: nothing legitimate arrives with a body.
-        .layer(DefaultBodyLimit::max(8 * 1024))
         .with_state(state)
 }
 
@@ -547,9 +569,8 @@ async fn search(
     let permit = state
         .semaphore
         .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| ApiError::Unavailable("shutting down".into()))?;
+        .try_acquire_owned()
+        .map_err(|_| ApiError::Unavailable("server is busy; retry shortly".into()))?;
     let index_for_items = Arc::clone(&index);
     let hits = tokio::task::spawn_blocking(move || {
         let _permit = permit;
@@ -632,6 +653,13 @@ fn kind_name(kind: crate::index::DepKind) -> &'static str {
     }
 }
 
+fn relation_kinds(mask: u8) -> Vec<&'static str> {
+    [(1, "input"), (2, "propagated"), (4, "native")]
+        .into_iter()
+        .filter_map(|(bit, name)| (mask & bit != 0).then_some(name))
+        .collect()
+}
+
 async fn package(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -648,13 +676,16 @@ async fn package(
     let permit = state
         .semaphore
         .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| ApiError::Unavailable("shutting down".into()))?;
+        .try_acquire_owned()
+        .map_err(|_| ApiError::Unavailable("server is busy; retry shortly".into()))?;
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, ApiError> {
         let _permit = permit;
         let id=resolve_root(&index,&name,&exact)?;
         let p = &index.packages[id as usize];
+        let mut dependency_kinds = std::collections::HashMap::<u32, u8>::with_capacity(p.relation_count());
+        for (dep, kind) in p.typed_deps() {
+            *dependency_kinds.entry(dep).or_default() |= 1 << kind as u8;
+        }
         let deps: Vec<serde_json::Value> = p
             .deps()
             .map(|(dep, kind)| {
@@ -663,20 +694,19 @@ async fn package(
                     "id":d.id,"catalog":d.catalog,"snapshot":index.snapshot_id(),
                     "name": d.name.as_ref(),
                     "version": d.version.as_ref(),
-                    "kind":kind_name(kind), "kinds":p.dep_kinds(dep).into_iter().map(kind_name).collect::<Vec<_>>(),
+                    "kind":kind_name(kind), "kinds":relation_kinds(dependency_kinds[&dep]),
                 })
             })
             .collect();
-        let dependents: Vec<serde_json::Value> = index.dependents[id as usize]
-            .iter()
-            .map(|d| {
-                let dep = &index.packages[*d as usize];
+        let dependents: Vec<serde_json::Value> = index.typed_dependents(id)
+            .map(|(d, kinds)| {
+                let dep = &index.packages[d as usize];
                 json!({
                     "id":dep.id,"catalog":dep.catalog,"snapshot":index.snapshot_id(),
-                    "kinds":dep.dep_kinds(id).into_iter().map(kind_name).collect::<Vec<_>>(),
+                    "kinds":relation_kinds(kinds),
                     "name": dep.name.as_ref(),
                     "version": dep.version.as_ref(),
-                    "dependents": index.dependents_count(*d),
+                    "dependents": index.dependents_count(d),
                 })
             })
             .collect();
@@ -754,9 +784,8 @@ async fn graph(
     let permit = state
         .semaphore
         .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| ApiError::Unavailable("shutting down".into()))?;
+        .try_acquire_owned()
+        .map_err(|_| ApiError::Unavailable("server is busy; retry shortly".into()))?;
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, ApiError> {
         let _permit = permit;
         let exact = ExactParams { id: params.id, snapshot: params.snapshot };
@@ -852,6 +881,56 @@ mod loading_tests {
     use axum::body::Body;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn saturated_work_rejects_promptly_while_health_remains_available() {
+        let doc = serde_json::from_str(include_str!("../../tests/fixtures/small.json")).unwrap();
+        let state = AppState::with_index(Index::from_doc(doc, 0).unwrap());
+        let occupied = state.semaphore.clone().acquire_many_owned(4).await.unwrap();
+        let api = router(state);
+        for path in ["search?q=emacs", "package/emacs", "graph/emacs", "health"] {
+            let request = Request::get(format!("/api/v1/{path}"))
+                .header("host", "127.0.0.1")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))))
+                .body(Body::empty())
+                .unwrap();
+            let response = tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                api.clone().oneshot(request),
+            )
+            .await
+            .expect("saturated request must not queue")
+            .unwrap();
+            assert_eq!(
+                response.status(),
+                if path == "health" {
+                    StatusCode::OK
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+            );
+            assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if path == "health" {
+                assert_eq!(value["ok"], true);
+            } else {
+                assert!(value["error"].is_string());
+            }
+        }
+        drop(occupied);
+        for path in ["search?q=emacs", "package/emacs", "graph/emacs"] {
+            let request = Request::get(format!("/api/v1/{path}"))
+                .header("host", "127.0.0.1")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))))
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(
+                api.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::OK
+            );
+        }
+    }
 
     #[tokio::test]
     async fn unavailable_index_returns_json_503() {

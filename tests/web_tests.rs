@@ -36,6 +36,119 @@ async fn json_of(res: axum::response::Response) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn readonly_api_rejects_actual_nonempty_bodies_without_trusting_length() {
+    let app = router(state());
+    for length in [None, Some("0"), Some("1")] {
+        let mut req = get("/api/v1/health");
+        *req.body_mut() = Body::from("x");
+        if let Some(length) = length {
+            req.headers_mut()
+                .insert("content-length", length.parse().unwrap());
+        }
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "length {length:?}");
+        assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(res.headers()["cache-control"], "no-store");
+    }
+    assert_eq!(
+        app.oneshot(get("/api/v1/health")).await.unwrap().status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn readonly_api_rejects_chunked_body_over_a_real_socket() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router(state()).into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    for (chunks, status) in [
+        ("1\r\nx\r\n0\r\n\r\n", "400 Bad Request"),
+        ("0\r\n\r\n", "200 OK"),
+    ] {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request = format!("GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{chunks}");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stream.read_to_string(&mut response),
+        )
+        .await
+        .expect("chunked response must be prompt")
+        .unwrap();
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {status}")),
+            "got: {response}"
+        );
+        assert!(response.contains("x-content-type-options: nosniff"));
+    }
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test]
+async fn readonly_api_bounds_wait_for_an_unfinished_chunked_body() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router(state()).into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    // Send headers but never send a chunk or EOF; Content-Length cannot
+    // distinguish this stream from a legitimate empty chunked request.
+    stream.write_all(b"GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut health = tokio::net::TcpStream::connect(addr).await.unwrap();
+    health
+        .write_all(b"GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut healthy_response = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        health.read_to_string(&mut healthy_response),
+    )
+    .await
+    .expect("an unfinished body must not block other health requests")
+    .unwrap();
+    assert!(
+        healthy_response.starts_with("HTTP/1.1 200 OK"),
+        "got: {healthy_response}"
+    );
+    let mut response = String::new();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        stream.read_to_string(&mut response),
+    )
+    .await;
+    server.abort();
+    let _ = server.await;
+    result
+        .expect("unfinished body must have a bounded rejection deadline")
+        .unwrap();
+    assert!(
+        response.starts_with("HTTP/1.1 400 Bad Request"),
+        "got: {response}"
+    );
+    assert!(response.contains("x-content-type-options: nosniff"));
+}
+
+#[tokio::test]
 async fn exact_identity_and_stale_snapshot() {
     let index = common::identity_fixture();
     let token = index.snapshot_id().to_string();
@@ -200,6 +313,71 @@ async fn snapshot_survives_cache_restart_but_not_changed_content_at_generation_o
         api.oneshot(get(&path)).await.unwrap().status(),
         StatusCode::CONFLICT
     );
+}
+
+#[tokio::test]
+async fn package_relations_keep_first_order_exact_ids_and_all_kinds() {
+    let mut doc: guixvis::model::IndexDoc =
+        serde_json::from_str(include_str!("fixtures/identity.json")).unwrap();
+    doc.packages[0].inputs = vec![4, 1, 3];
+    doc.packages[0].propagated_inputs = vec![2, 1];
+    doc.packages[0].native_inputs = vec![5, 2, 1];
+    doc.diagnostics.push(guixvis::model::IndexDiagnostic {
+        package_id: 0,
+        kind: "input".into(),
+        code: "accessor-failed".into(),
+        message: "Unavailable".into(),
+    });
+    let index = guixvis::index::Index::from_doc(doc, 0).unwrap();
+    let token = index.snapshot_id().to_string();
+    let api = router(AppState::with_index(index));
+    let body = json_of(
+        api.clone()
+            .oneshot(get(&format!("/api/v1/package/root?id=0&snapshot={token}")))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["complete"], false);
+    assert_eq!(body["diagnostics_count"], 1);
+    assert_eq!(body["relations_count"], 8);
+    let relations: Vec<_> = body["deps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|dep| serde_json::json!([dep["id"], dep["kind"], dep["kinds"]]))
+        .collect();
+    assert_eq!(
+        relations,
+        vec![
+            serde_json::json!([4, "input", ["input"]]),
+            serde_json::json!([1, "input", ["input", "propagated", "native"]]),
+            serde_json::json!([3, "input", ["input"]]),
+            serde_json::json!([2, "propagated", ["propagated", "native"]]),
+            serde_json::json!([5, "native", ["native"]]),
+        ]
+    );
+    assert_eq!(body["deps"][0]["catalog"], false);
+    assert_eq!(body["deps"][2]["catalog"], true);
+    for (id, kinds) in [
+        (1, serde_json::json!(["input", "propagated", "native"])),
+        (2, serde_json::json!(["propagated", "native"])),
+    ] {
+        let reverse = json_of(
+            api.clone()
+                .oneshot(get(&format!(
+                    "/api/v1/package/lib?id={id}&snapshot={token}"
+                )))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let dependents = reverse["dependents"].as_array().unwrap();
+        assert_eq!(dependents.len(), 1);
+        assert_eq!(dependents[0]["id"], 0);
+        assert_eq!(dependents[0]["kinds"], kinds);
+        assert_eq!(dependents[0]["snapshot"], token);
+    }
 }
 
 #[tokio::test]

@@ -65,16 +65,29 @@ impl Cache {
         built_ms: u64,
     ) -> Result<CacheStatus, CacheError> {
         let path = self.path();
-        if !path.exists() {
-            return Ok(CacheStatus::Absent);
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use nix::fcntl::OFlag;
+            use std::os::unix::fs::OpenOptionsExt;
+            // Never wait for a FIFO writer or follow a planted cache symlink.
+            options.custom_flags((OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW).bits());
+        }
+        let file = match options.open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CacheStatus::Absent),
+            Err(e) => return Err(CacheError::Read(e.to_string())),
+        };
+        let metadata = file
+            .metadata()
+            .map_err(|e| CacheError::Read(e.to_string()))?;
+        if !metadata.file_type().is_file() {
+            return Err(CacheError::Read("snapshot is not a regular file".into()));
         }
         // A snapshot is ~14 MB for 32.5k packages; anything far beyond that
         // is not ours and must not be read into memory.
-        let file = File::open(&path).map_err(|e| CacheError::Read(e.to_string()))?;
-        let len = file
-            .metadata()
-            .map_err(|e| CacheError::Read(e.to_string()))?
-            .len();
+        let len = metadata.len();
         if len > MAX_SNAPSHOT_BYTES {
             return Err(CacheError::Read(format!(
                 "snapshot is implausibly large ({len} bytes)"
